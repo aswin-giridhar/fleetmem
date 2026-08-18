@@ -43,7 +43,7 @@ echo "  duration  : ${DURATION}s"
 echo
 
 # --- preflight: the DB must be reachable before we blame DDS for anything --------------
-if ! crdb_sql -e "SELECT 1;" >/dev/null 2>&1; then
+if ! docker exec -i "$CRDB_CONTAINER" ./cockroach sql --insecure -e "SELECT 1;" >/dev/null 2>&1; then
   echo "FAIL: local CockroachDB container '$CRDB_CONTAINER' is not reachable."
   echo "      start one with:"
   echo "      docker run -d --name crdb -p 26257:26257 cockroachdb/cockroach:latest \\"
@@ -51,6 +51,20 @@ if ! crdb_sql -e "SELECT 1;" >/dev/null 2>&1; then
   exit 1
 fi
 echo "[preflight] local CockroachDB reachable"
+
+# Distinguish "no database" from "no cluster" -- they need different fixes, so they must
+# not produce the same message. Creating fleet_ros is safe and idempotent: it is a
+# dedicated database for this bridge and nothing else reads it.
+if ! crdb_sql -e "SELECT 1 FROM resource_claims LIMIT 1;" >/dev/null 2>&1; then
+  echo "[preflight] database fleet_ros missing or unschemad -- creating it"
+  docker exec -i "$CRDB_CONTAINER" ./cockroach sql --insecure \
+      -e "CREATE DATABASE IF NOT EXISTS fleet_ros;" >/dev/null 2>&1
+  if ! crdb_sql < "$REPO/fleetmem/schema.sql" >/dev/null 2>&1; then
+    echo "FAIL: could not apply $REPO/fleetmem/schema.sql to fleet_ros"; exit 1
+  fi
+  echo "[preflight] schema applied to fleet_ros"
+fi
+echo "[preflight] fleet_ros schema present"
 
 if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
   echo "[preflight] building $IMAGE ..."

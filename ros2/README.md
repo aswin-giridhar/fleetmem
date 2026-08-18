@@ -66,15 +66,22 @@ Prerequisites: Docker, and a local CockroachDB.
 docker run -d --name crdb -p 26257:26257 -p 8080:8080 \
   cockroachdb/cockroach:latest start-single-node --insecure
 
-# 2. an isolated database with the FleetMem schema
+# 2. run the whole thing and print the evidence
+./ros2/verify_ros_bridge.sh
+```
+
+The script is self-sufficient from there: its preflight creates the `fleet_ros` database
+and applies `fleetmem/schema.sql` if they are missing, and builds `fleetmem-ros:jazzy` if
+the image is absent. **This cold-start path was executed**, from a deliberately dropped
+database, not merely written down. A missing *database* and a missing *cluster* report
+differently, because they need different fixes.
+
+Equivalent manual steps, if you would rather do it yourself:
+
+```bash
 docker exec crdb ./cockroach sql --insecure -e "CREATE DATABASE IF NOT EXISTS fleet_ros;"
 docker exec -i crdb ./cockroach sql --insecure --database=fleet_ros < fleetmem/schema.sql
-
-# 3. build the ROS 2 runtime
 docker build -t fleetmem-ros:jazzy -f ros2/Dockerfile ros2/
-
-# 4. run the whole thing and print the evidence
-./ros2/verify_ros_bridge.sh
 ```
 
 ### Why a separate `fleet_ros` database
@@ -172,17 +179,20 @@ R2        claim_granted    {"resource_id": "ros-dock-1"}
 R2        claim_released   {"resource_id": "ros-dock-1"}
 ```
 
-**The physical consequence — `fake_robot`'s integrated pose** (excerpt from an
-equivalent run of the same script; the freeze reproduces on every run): R2's position freezes at
-`+2.88` for twelve seconds while R1 drives into the dock, then resumes the instant the
-database grants it the claim:
+**The physical consequence — `fake_robot`'s integrated pose, from the SAME run as the
+claim table above.** R2's position freezes at `+2.94` for eleven seconds while R1 drives
+into the dock, then resumes the instant the database grants it the claim:
 
 ```
-POSE  R1 pos=(-3.18,+0.00) v=0.60  |  R2 pos=(+3.18,+0.00) v=0.60   <- both approaching
-POSE  R1 pos=(-2.58,+0.00) v=0.60  |  R2 pos=(+2.88,+0.00) v=0.00   <- R2 DENIED, stopped
-POSE  R1 pos=(-0.78,+0.00) v=0.60  |  R2 pos=(+2.88,+0.00) v=0.00
-POSE  R1 pos=(-0.14,+0.00) v=0.00  |  R2 pos=(+2.88,+0.00) v=0.00   <- R1 docked, dwelling
-POSE  R1 pos=(-0.14,+0.00) v=0.00  |  R2 pos=(+2.58,+0.00) v=0.60   <- released -> R2 moves
+POSE  R1 pos=(-3.36,+0.00) v=0.60  |  R2 pos=(+3.36,+0.00) v=0.60   <- both approaching
+POSE  R1 pos=(-2.76,+0.00) v=0.60  |  R2 pos=(+2.94,+0.00) v=0.00   <- R2 DENIED, stopped
+POSE  R1 pos=(-1.50,+0.00) v=0.60  |  R2 pos=(+2.94,+0.00) v=0.00
+POSE  R1 pos=(-0.42,+0.00) v=0.60  |  R2 pos=(+2.94,+0.00) v=0.00
+POSE  R1 pos=(+0.13,+0.00) v=0.00  |  R2 pos=(+2.94,+0.00) v=0.00   <- R1 docked, dwelling
+POSE  R1 pos=(+0.13,+0.00) v=0.00  |  R2 pos=(+2.94,+0.00) v=0.00
+POSE  R1 pos=(+0.13,+0.00) v=0.00  |  R2 pos=(+2.70,+0.00) v=0.60   <- released -> R2 moves
+POSE  R1 pos=(+0.13,+0.00) v=0.00  |  R2 pos=(+1.50,+0.00) v=0.60
+POSE  R1 pos=(+0.13,+0.00) v=0.00  |  R2 pos=(+0.13,+0.00) v=0.00   <- R2 now in the dock
 ```
 
 That freeze is the point of the whole project: **a unique index in a distributed database
