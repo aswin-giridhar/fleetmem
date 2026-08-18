@@ -130,7 +130,7 @@ function escapeHtml(s) {
 }
 
 /* ---------- shared rendering ---------------------------------------------- */
-const LEASE_FULL = 30;   // seconds; matches FleetMemory.DEFAULT_LEASE_SECONDS
+const LEASE_FULL = 90;   // seconds; matches FleetMemory.DEFAULT_LEASE_SECONDS
 
 export function renderAnnunciator(state) {
   const ttl = state.claim_ttl || {};
@@ -139,7 +139,7 @@ export function renderAnnunciator(state) {
   host.innerHTML = (state.docks || []).map(d => {
     const who = claims[d.id];
     const secs = ttl[d.id];
-    const low = secs !== undefined && secs <= 10;
+    const low = secs !== undefined && secs <= 20;
     const pct = secs !== undefined ? Math.max(0, Math.min(100, (secs / LEASE_FULL) * 100)) : 0;
     return `<div class="slot ${who ? 'held' : ''}">
       <div><div class="rid">${d.id}</div>

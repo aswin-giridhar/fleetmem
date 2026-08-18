@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -70,6 +70,15 @@ def index():
 @app.get("/2d", response_class=HTMLResponse)
 def index_2d():
     return (WEB / "index.html").read_text()
+
+
+@app.get("/favicon.ico")
+def favicon():
+    """Served so the browser console stays free of 404 noise during a demo."""
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+           '<rect width="32" height="32" rx="6" fill="#1d6fe0"/>'
+           '<circle cx="16" cy="16" r="7" fill="#fff"/></svg>')
+    return Response(content=svg, media_type="image/svg+xml")
 
 
 @app.get("/app.css")

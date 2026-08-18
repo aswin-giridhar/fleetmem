@@ -29,7 +29,7 @@ class FleetMemory:
 
     # ---------------------------------------------------------------- claims
 
-    DEFAULT_LEASE_SECONDS = 30
+    DEFAULT_LEASE_SECONDS = 90
 
     def reap_expired(self) -> int:
         """Release claims whose lease has lapsed. Returns how many were reclaimed.

@@ -231,6 +231,14 @@ class Warehouse:
         with self.lock:
             live = self.memory.live_claims()
             claims = {c["resource_id"]: c["robot_id"] for c in live}
+            # The database is the source of truth. A lease can expire while a robot is
+            # parked, and a robot still rendered as "holding" when its claim is gone is the
+            # view lying about the memory layer — the one thing this demo must never do.
+            for robot in self.robots.values():
+                if robot.holding and claims.get(robot.holding) != robot.id:
+                    robot.holding = None
+                    robot.status = "idle"
+                    robot.note = "lease expired"
             # seconds remaining on each lease, so the UI can show a claim expiring
             ttl = {c["resource_id"]: max(0, int(c["ttl"].total_seconds()))
                    for c in live if c.get("ttl") is not None}
