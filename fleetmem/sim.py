@@ -74,6 +74,9 @@ class Warehouse:
         from .memory import ensure_fleet
         self.fleet_id = ensure_fleet(self._fleet_name)
         self.memory = FleetMemory(self.fleet_id)
+        # Re-seed: a schema reset wipes the fleet's lessons, and a warehouse with an empty
+        # memory is the one thing this demo must never show. Seeding is idempotent.
+        self._seed_lessons()
 
     def fleet_is_valid(self) -> bool:
         rows = self.memory.db.query("SELECT 1 AS ok FROM fleets WHERE id = %s",
@@ -86,7 +89,15 @@ class Warehouse:
             rid = f"R{i}"
             self.robots[rid] = Robot(rid, x=random.uniform(10, 45),
                                      y=random.uniform(6, HEIGHT - 6))
-        existing = {m["lesson"] for m in self.memory.recall("warehouse", limit=50)}
+        self._seed_lessons()
+
+    def _seed_lessons(self):
+        """Ensure the fleet's baseline lessons exist. Idempotent."""
+        try:
+            existing = {m["lesson"] for m in self.memory.recall("warehouse", limit=50)}
+        except Exception as exc:
+            log.warning("could not read existing memories: %s", exc)
+            return
         for robot_id, lesson, location in SEED_LESSONS:
             if lesson not in existing:
                 self.memory.remember(robot_id, lesson, location=location)
@@ -218,7 +229,11 @@ class Warehouse:
 
     def snapshot(self) -> dict:
         with self.lock:
-            claims = {c["resource_id"]: c["robot_id"] for c in self.memory.live_claims()}
+            live = self.memory.live_claims()
+            claims = {c["resource_id"]: c["robot_id"] for c in live}
+            # seconds remaining on each lease, so the UI can show a claim expiring
+            ttl = {c["resource_id"]: max(0, int(c["ttl"].total_seconds()))
+                   for c in live if c.get("ttl") is not None}
             return {
                 "tick": self.tick,
                 "width": WIDTH, "height": HEIGHT,
@@ -229,6 +244,7 @@ class Warehouse:
                             "note": r.note, "trail": r.trail[-20:]}
                            for r in self.robots.values()],
                 "claims": claims,
+                "claim_ttl": ttl,
                 "log": self.log_lines[-18:],
             }
 

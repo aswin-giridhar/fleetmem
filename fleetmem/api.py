@@ -104,6 +104,19 @@ def state():
     return warehouse.snapshot()
 
 
+@app.post("/api/reseed")
+def reseed():
+    """Re-resolve the fleet and restore baseline lessons.
+
+    Exists because a schema reset underneath a running server leaves it pointing at a fleet
+    that no longer exists, with an empty memory — and an empty memory is indistinguishable
+    from a broken one to anyone looking at the UI.
+    """
+    warehouse.refresh_fleet()
+    return {"ok": True, "fleet_id": warehouse.fleet_id,
+            "lessons": len(warehouse.memory.recall("warehouse", limit=50))}
+
+
 @app.post("/api/race")
 def race(req: RaceRequest):
     """Two agents, one dock, genuinely concurrent. The core demo."""

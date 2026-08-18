@@ -113,7 +113,7 @@ class Config:
     aws_region: str = os.environ.get("AWS_REGION", "us-west-2")
     embed_model: str = os.environ.get("BEDROCK_EMBED_MODEL", "amazon.titan-embed-text-v2:0")
     chat_model: str = os.environ.get(
-        "BEDROCK_CHAT_MODEL", "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        "BEDROCK_CHAT_MODEL", "us.amazon.nova-lite-v1:0"
     )
     s3_bucket: str = os.environ.get("FLEETMEM_S3_BUCKET", "")
     # When strict, a missing AWS dependency raises instead of degrading to a local fallback.

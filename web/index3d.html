@@ -45,6 +45,19 @@
   .hintbar{position:fixed;bottom:16px;right:16px;color:var(--dim);font:11px var(--mono);
            background:var(--panel);border:1px solid var(--line);padding:7px 11px;border-radius:8px}
   a{color:var(--accent)}
+  #conn{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:98;
+        background:#3a1620;border:1px solid #ff6b6b;color:#ffd9d9;padding:8px 15px;
+        border-radius:8px;font:12px/1.4 var(--mono);display:none}
+  .legend{display:flex;gap:13px;flex-wrap:wrap;font:11px/1.5 var(--mono);color:var(--dim)}
+  .legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+  .sql3d{font:11px/1.6 var(--mono);background:#080b10;border:1px solid var(--line);border-radius:7px;padding:9px;color:#9fb4cc;white-space:pre-wrap;overflow-x:auto}
+  .ttl{color:var(--dim);font-size:11px}
+  .ttl.low{color:var(--warn)}
+  kbd{background:#0d131b;border:1px solid #2b3648;border-bottom-width:2px;border-radius:4px;
+      padding:1px 6px;font:11px var(--mono);color:var(--dim)}
+  .empty{color:var(--dim);font-size:12px;line-height:1.6}
+  .empty button{margin-top:7px;padding:6px 11px;font-size:12px}
+
   #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:88px;z-index:99;
          background:#3a1620;border:1px solid #ff6b6b;color:#ffd9d9;padding:11px 16px;
          border-radius:9px;font:12.5px/1.5 var(--mono);max-width:min(680px,88vw);
@@ -72,13 +85,32 @@
 
 <div class="hud" id="side">
   <h2>Live claims (CockroachDB)</h2>
-  <table><thead><tr><th>resource</th><th>held by</th></tr></thead>
+  <table><thead><tr><th>resource</th><th>held by</th><th>lease</th></tr></thead>
   <tbody id="claims"><tr><td colspan="2" style="color:var(--dim)">none</td></tr></tbody></table>
 
   <h2>Fleet memory — semantic recall</h2>
   <input id="q" value="pallet slips at bay 12" onkeydown="if(event.key==='Enter')recall()"/>
   <button onclick="recall()" style="width:100%">Recall across fleet</button>
   <div id="hits" style="margin-top:9px"></div>
+
+  <h2>Legend</h2>
+  <div class="legend">
+    <span><i style="background:#39d4a0"></i>holding a claim</span>
+    <span><i style="background:#ffb454"></i>re-routing (denied)</span>
+    <span><i style="background:#ff6b6b"></i>blocked</span>
+    <span><i style="background:#8296ad"></i>idle</span>
+  </div>
+
+  <h2>What the database is doing</h2>
+  <div class="sql3d">-- at most ONE live claim per resource
+CREATE UNIQUE INDEX one_holder_per_resource
+  ON resource_claims (fleet_id, resource_id)
+  WHERE released_at IS NULL;
+
+-- fleet-wide recall; fleet_id is the index PREFIX
+SELECT lesson, embedding &lt;=&gt; $1 AS distance
+  FROM fleet_memory WHERE fleet_id = $2
+  ORDER BY embedding &lt;=&gt; $1 LIMIT 5;</div>
 
   <h2>Event stream</h2>
   <div id="log"></div>
@@ -90,8 +122,9 @@
   <button onclick="task('R5')">Task R5</button>
   <button onclick="reset()">Release all</button>
 </div>
+<div id="conn"></div>
 <div id="toast"></div>
-<div class="hintbar">drag to orbit · scroll to zoom</div>
+<div class="hintbar">drag to orbit · scroll to zoom · <kbd>R</kbd> race · <kbd>X</kbd> release</div>
 
 <script type="module">
 import * as THREE from './vendor/three.module.js';
@@ -286,10 +319,17 @@ function applyState(s){
 }
 
 function renderClaims(){
+  const ttls = S.claim_ttl || {};
   const rows = Object.entries(S.claims||{});
   document.getElementById('claims').innerHTML = rows.length
-    ? rows.map(([r,who])=>`<tr><td>${r}</td><td style="color:var(--claim)">${who}</td></tr>`).join('')
-    : '<tr><td colspan="2" style="color:var(--dim)">none</td></tr>';
+    ? rows.map(([r,who])=>{
+        const t = ttls[r];
+        const low = t !== undefined && t < 10;
+        return `<tr><td>${r}</td><td style="color:var(--claim)">${who}</td>` +
+               `<td class="ttl${low?' low':''}">${t!==undefined?`lease ${t}s`:''}</td></tr>`;
+      }).join('')
+    : '<tr><td colspan="3" style="color:var(--dim)">no live claims — press ' +
+      '<kbd>R</kbd> to race two robots for dock-3</td></tr>';
 }
 function renderLog(){
   document.getElementById('log').innerHTML = (S.log||[]).slice().reverse()
@@ -320,8 +360,39 @@ function animate(){
 animate();
 
 // --- data -------------------------------------------------------------------
-const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
-ws.onmessage = e => applyState(JSON.parse(e.data));
+
+// A silently dead socket looks exactly like an idle fleet. Show it, and reconnect.
+let ws, wsRetry = 0;
+function showConn(msg){
+  const el = document.getElementById('conn');
+  if(!el) return;
+  if(msg){ el.textContent = msg; el.style.display = 'block'; }
+  else el.style.display = 'none';
+}
+function connect(){
+  ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+  ws.onopen = () => { wsRetry = 0; showConn(null); };
+  ws.onmessage = e => { showConn(null); onState(JSON.parse(e.data)); };
+  ws.onclose = () => {
+    wsRetry++;
+    showConn(`disconnected from server — reconnecting (attempt ${wsRetry})…`);
+    setTimeout(connect, Math.min(1000 * wsRetry, 6000));
+  };
+  ws.onerror = () => ws.close();
+}
+function fmtTTL(iso){
+  if(!iso) return '';
+  const s = Math.round((new Date(iso) - Date.now())/1000);
+  return s > 0 ? `${s}s` : 'expired';
+}
+
+const onState = applyState;
+connect();
+addEventListener('keydown', e => {
+  if(e.target.tagName === 'INPUT') return;
+  if(e.key === 'r' || e.key === 'R') window.race();
+  if(e.key === 'x' || e.key === 'X') window.reset();
+});
 
 const J = b => ({method:'POST', headers:{'content-type':'application/json'},
                  body: JSON.stringify(b)});
@@ -343,7 +414,13 @@ window.recall = async () => {
   document.getElementById('hits').innerHTML = r.hits.length ? r.hits.map(h=>
     `<div class="hit"><div class="d">distance ${h.distance} · ${h.robot_id}</div>
      <div>${h.lesson}</div><div class="m">${h.location||'—'} · ${h.provider}</div></div>`).join('')
-    : '<div style="color:var(--dim)">no memories</div>';
+    : '<div class="empty">No lessons stored yet. The fleet\'s memory may have been reset.' +
+      '<br><button onclick="reseed()">Restore baseline lessons</button></div>';
+};
+
+window.reseed = async () => {
+  const r = await call('/api/reseed', {method:'POST'}, 'Reseed');
+  if(r){ toast(`fleet memory restored — ${r.lessons} lessons`, true); recall(); }
 };
 
 (async function boot(){

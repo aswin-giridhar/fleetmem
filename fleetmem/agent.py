@@ -43,26 +43,66 @@ class Decision:
 
 
 class BedrockReasoner:
+    """Bedrock planning via the **Converse API**.
+
+    Converse is provider-agnostic: one request shape for Amazon Nova, Anthropic Claude,
+    Meta Llama and Mistral alike. The earlier implementation used invoke_model with the
+    Anthropic-specific body format, which meant the model choice was welded into the
+    request. With Converse, switching providers is a config change — which mattered here,
+    because Anthropic inference profiles were not available in this account while Nova,
+    Llama and Mistral all were.
+
+    FALLBACK_MODELS is tried in order when the configured model is unavailable, so a model
+    that is missing in one account or region degrades to another rather than to no agent.
+    """
+
     name = "bedrock"
+
+    FALLBACK_MODELS = [
+        "us.amazon.nova-lite-v1:0",
+        "us.amazon.nova-pro-v1:0",
+        "us.meta.llama3-3-70b-instruct-v1:0",
+        "mistral.mistral-large-2407-v1:0",
+    ]
 
     def __init__(self):
         import boto3
         self._client = boto3.client("bedrock-runtime", region_name=CONFIG.aws_region)
+        self.model_id: str | None = None
+
+    def _candidates(self) -> list[str]:
+        ordered = [CONFIG.chat_model] + [m for m in self.FALLBACK_MODELS
+                                         if m != CONFIG.chat_model]
+        return ordered
+
+    def _converse(self, model_id: str, prompt: str, max_tokens: int = 400) -> str:
+        response = self._client.converse(
+            modelId=model_id,
+            system=[{"text": SYSTEM_PROMPT}],
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": max_tokens, "temperature": 0.2},
+        )
+        return response["output"]["message"]["content"][0]["text"]
+
+    def resolve(self) -> str:
+        """Find the first usable model. Caches the winner on the instance."""
+        if self.model_id:
+            return self.model_id
+        last: Exception | None = None
+        for model_id in self._candidates():
+            try:
+                self._converse(model_id, "Reply with the single word: ready", max_tokens=8)
+                self.model_id = model_id
+                return model_id
+            except Exception as exc:
+                last = exc
+                continue
+        raise ReasoningUnavailableError(f"no Bedrock model usable: {last}")
 
     def decide(self, prompt: str) -> dict:
-        response = self._client.invoke_model(
-            modelId=CONFIG.chat_model,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 400,
-                "system": SYSTEM_PROMPT,
-                "messages": [{"role": "user", "content": prompt}],
-            }),
-        )
-        payload = json.loads(response["body"].read())
-        blocks = payload.get("content") or []
-        text = "".join(b.get("text", "") for b in blocks).strip()
-        # Validate the content. A 200 that isn't JSON is not an answer.
+        model_id = self.resolve()
+        text = self._converse(model_id, prompt).strip()
+        # Validate the CONTENT. A 200 that is not JSON is not an answer.
         start, end = text.find("{"), text.rfind("}")
         if start == -1 or end == -1:
             raise ReasoningUnavailableError(f"model returned no JSON object: {text[:120]!r}")
@@ -181,15 +221,12 @@ class RobotAgent:
 
 
 def active_reasoner_name() -> str:
-    """Which reasoner is ACTUALLY usable right now.
+    """Which reasoner is ACTUALLY usable right now, established by a real call.
 
-    Deliberately performs a real minimal InvokeModel. Earlier versions checked only that a
-    boto3 client could be constructed and that STS returned an identity — both succeed with
-    credentials that have no Bedrock permission at all, so the UI confidently displayed
-    "bedrock" while every call was failing with AccessDenied. Valid credentials are not
-    model access. The probe must exercise the thing it reports on.
-
-    The result is cached: this costs one tiny inference per process, not one per request.
+    An earlier version checked only that a boto3 client could be built and that STS
+    returned an identity. Both succeed with credentials that have no Bedrock access at all,
+    so the UI displayed "bedrock" while every inference failed. Valid credentials are not
+    model access, and a configured model id is not an available one. Probe the real thing.
     """
     global _PROBED
     try:
@@ -198,19 +235,13 @@ def active_reasoner_name() -> str:
         pass
     try:
         reasoner = BedrockReasoner()
-        reasoner._client.invoke_model(
-            modelId=CONFIG.chat_model,
-            body=json.dumps({
-                "anthropic_version": "bedrock-2023-05-31",
-                "max_tokens": 1,
-                "messages": [{"role": "user", "content": "hi"}],
-            }),
-        )
-        _PROBED = f"bedrock ({CONFIG.chat_model.split('.')[-1][:26]})"
+        model_id = reasoner.resolve()
+        _PROBED = f"bedrock ({model_id})"
     except Exception as exc:
         code = getattr(exc, "response", {}).get("Error", {}).get("Code", type(exc).__name__)
         reason = {"AccessDeniedException": "no Bedrock model access",
                   "NoCredentialsError": "no AWS credentials",
-                  "ValidationException": "model id not available in region"}.get(code, code)
+                  "ResourceNotFoundException": "configured model not available in region",
+                  }.get(code, code)
         _PROBED = f"local-policy ({reason})"
     return _PROBED
