@@ -6,6 +6,8 @@ A fleet of warehouse robots shares **one** CockroachDB memory layer. Memory is w
 each agent competent — it recalls what the fleet has learned — and what makes it **safe**:
 two agents cannot take the same irreversible physical action.
 
+![FleetMem console](docs/console-3d.png)
+
 **Live demo → https://18-237-2-184.nip.io/**  ·  **Source → https://github.com/aswin-giridhar/fleetmem**
 
 > In a traditional app, a lost write shows someone a stale page.
@@ -87,6 +89,8 @@ irreversible act is authorised against it:
 grant = memory.claim("dock-3", "R1")     # -> {"epoch": 7, ...}
 memory.act("dock-3", "R1", grant["epoch"])   # raises StaleFenceError if superseded
 ```
+
+![Fencing evidence](docs/fencing-evidence.png)
 
 `scripts/verify_fencing.py` asserts the case that matters: R1 pauses past its lease, R2
 legitimately takes the dock at a higher epoch, and R1's attempt to act is rejected —
@@ -209,6 +213,8 @@ speed:
 [R1] RELEASED ros-dock-1 after 8.0s dwell
 [R2] CLAIM GRANTED on ros-dock-1 epoch=14
 ```
+
+![ROS 2 evidence](docs/ros2-evidence.png)
 
 The denied robot's integrated pose **froze at +2.94 for eleven seconds** and resumed the
 instant CockroachDB granted its claim. `fake_robot.py` integrates the `cmd_vel` it receives,
