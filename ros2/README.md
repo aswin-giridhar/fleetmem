@@ -122,23 +122,58 @@ wins by being closer.
 **Bridge log — the claim race:**
 
 ```
-[INFO] [fleetmem_bridge]: [R1] CLAIM GRANTED on ros-dock-1 epoch=1 -- actuator authorised
+[INFO] [fleetmem_bridge]: [R1] CLAIM GRANTED on ros-dock-1 epoch=11 -- actuator authorised
 [WARN] [fleetmem_bridge]: [R2] CLAIM DENIED on ros-dock-1 -- held by R1; publishing zero Twist to /R2/cmd_vel
 [WARN] [fleetmem_bridge]: [R2] STOP commanded (denied, holder=R1)
+[WARN] [fleetmem_bridge]: [R2] STOP commanded (dock ros-dock-1 held by R1)
 [INFO] [fleetmem_bridge]: [R1] RELEASED ros-dock-1 after 8.0s dwell -- dock is now claimable
-[INFO] [fleetmem_bridge]: [R2] CLAIM GRANTED on ros-dock-1 epoch=5 -- actuator authorised
+[INFO] [fleetmem_bridge]: [R2] CLAIM GRANTED on ros-dock-1 epoch=14 -- actuator authorised
 ```
 
 **CockroachDB — `resource_claims` for that run.** One live claim at a time; R2 only gets the
-dock after R1's `released_at` is set:
+dock after R1's `released_at` is set, and at a strictly higher fencing epoch:
 
 ```
 resource_id   robot_id  epoch  claimed_at                      released_at
-ros-dock-1    R1        1      2026-08-18 19:53:10.038838+00   2026-08-18 19:53:18.241207+00
-ros-dock-1    R2        5      2026-08-18 19:53:22.039258+00   NULL
+ros-dock-1    R1        11     2026-08-18 19:57:11.837395+00   2026-08-18 19:57:20.042524+00
+ros-dock-1    R2        14     2026-08-18 19:57:22.037710+00   2026-08-18 19:57:30.651313+00
 ```
 
-**The physical consequence — `fake_robot`'s integrated pose.** R2's position freezes at
+Sampled live, *while* the robots were contending — not only at the end:
+
+```
+  t=14s  live claims on ros-dock-1 = 1
+  t=20s  live claims on ros-dock-1 = 1
+  t=26s  live claims on ros-dock-1 = 0     (R1 released, R2 not yet re-claimed)
+
+ THE INVARIANT -- peak simultaneous holders of ros-dock-1 over the whole run (must be 1):
+   peak_simultaneous_holders = 1
+   PASS -- two robots contended for one dock and never held it at the same time.
+```
+
+**A note on that invariant check, because the first version of it was wrong.** Counting
+rows still live at the *end* of the run reports `0` — every claim has been released by then
+— and it can never fail, which makes it a gate wearing a safety costume rather than a
+safety mechanism. The query now asks whether any two claims on the resource **overlapped in
+time**. It is capable of returning 2: the partial unique index does not forbid two
+overlapping *released* rows, since its predicate is `released_at IS NULL`. That was checked
+against a hand-built fixture of two deliberately overlapping closed claims, which the query
+scores **2**, versus **1** for a strictly sequential pair.
+
+**The audit trail CockroachDB recorded independently of the ROS logs:**
+
+```
+robot_id  kind             detail
+R1        claim_granted    {"resource_id": "ros-dock-1"}
+R2        claim_denied     {"holder": "R1", "resource_id": "ros-dock-1"}
+R2        claim_denied     {"holder": "R1", "resource_id": "ros-dock-1"}
+R1        claim_released   {"resource_id": "ros-dock-1"}
+R2        claim_granted    {"resource_id": "ros-dock-1"}
+R2        claim_released   {"resource_id": "ros-dock-1"}
+```
+
+**The physical consequence — `fake_robot`'s integrated pose** (excerpt from an
+equivalent run of the same script; the freeze reproduces on every run): R2's position freezes at
 `+2.88` for twelve seconds while R1 drives into the dock, then resumes the instant the
 database grants it the claim:
 
@@ -177,10 +212,14 @@ The velocities were also read off `/R1/cmd_vel` and `/R2/cmd_vel` by `ros2 topic
 - **Not tested against CockroachDB Cloud.** Deliberately: the live cluster serves the
   deployed demo, and polluting it with test claims before judging would be reckless. Only a
   local node was used.
-- **Killing the container leaves the last claim un-released** (SIGKILL bypasses the shutdown
-  handler). Its 90-second lease then lapses and the dock is reclaimed — which is exactly the
-  crashed-robot path `verify_leases.py` covers — but it does mean a run can end with one live
-  row.
+- **Killing the container mid-dwell leaves the last claim un-released** (a hard kill bypasses
+  the shutdown handler). Its 90-second lease then lapses and the dock is reclaimed — exactly
+  the crashed-robot path `verify_leases.py` covers — but it does mean an interrupted run can
+  end with one live row. A run allowed to finish releases cleanly, as the table above shows.
+- **The `/cmd_vel` zero-Twist totals printed by the script do not isolate denial.** They count
+  every zero Twist, including the legitimate stop while a robot dwells in the dock. The
+  evidence that isolates denial is the pose freeze, cross-referenced against the claim
+  timestamps.
 
 ## Status
 

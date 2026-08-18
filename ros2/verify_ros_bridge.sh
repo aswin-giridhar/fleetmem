@@ -154,15 +154,31 @@ crdb_sql -e "SELECT resource_id, robot_id, epoch, claimed_at, released_at
              FROM resource_claims WHERE fleet_id = '$FLEET_ID' ORDER BY claimed_at;"
 
 echo
-echo " Peak simultaneous holders of $DOCK (must be 1):"
-crdb_sql -e "SELECT max(live) AS peak_simultaneous_holders FROM (
-               SELECT count(*) FILTER (WHERE released_at IS NULL) AS live
-               FROM resource_claims
-               WHERE fleet_id = '$FLEET_ID' AND resource_id = '$DOCK');"
+echo " THE INVARIANT -- peak simultaneous holders of $DOCK over the whole run (must be 1):"
+# Counting rows that are still live AT THE END is not an invariant check -- by then every
+# claim is released, so it reports 0 and can never fail. The real question is whether any
+# two claims on this resource OVERLAPPED IN TIME. Note the partial unique index does not
+# forbid two overlapping RELEASED rows (its predicate is `released_at IS NULL`), so this
+# query is genuinely capable of returning 2 -- verified against a hand-built overlapping
+# fixture, which it scores 2 while a strictly sequential one scores 1.
+PEAK=$(crdb_sql --format=csv -e "
+  SELECT max(n) FROM (
+    SELECT (SELECT count(*) FROM resource_claims b
+            WHERE b.fleet_id = a.fleet_id AND b.resource_id = a.resource_id
+              AND b.claimed_at <= coalesce(a.released_at, now())
+              AND coalesce(b.released_at, now()) >= a.claimed_at) AS n
+    FROM resource_claims a
+    WHERE a.fleet_id = '$FLEET_ID' AND a.resource_id = '$DOCK');" 2>/dev/null | tail -1)
+echo "   peak_simultaneous_holders = ${PEAK:-?}"
+if [ "${PEAK:-}" = "1" ]; then
+  echo "   PASS -- two robots contended for one dock and never held it at the same time."
+else
+  echo "   FAIL -- expected exactly 1 (got '${PEAK:-none}')."
+fi
 
 echo
 echo " Audit trail (agent_events):"
-crdb_sql -e "SELECT robot_id, kind, payload FROM agent_events
+crdb_sql -e "SELECT robot_id, kind, detail FROM agent_events
              WHERE fleet_id = '$FLEET_ID' ORDER BY created_at;" 2>&1 | head -30
 
 echo
@@ -170,20 +186,23 @@ echo "=============================================================="
 echo " EVIDENCE 2 -- ROS 2: grants, denials and stop commands"
 echo "=============================================================="
 grep -E "CLAIM GRANTED|CLAIM DENIED|FENCED|RELEASED|STOP commanded" \
-     "$OUT/bridge.log" 2>/dev/null | head -25 || echo "(no bridge.log)"
+     "$OUT/bridge.log" 2>/dev/null | head -25
 
 echo
 echo " Independent subscriber on the DENIED robot's /cmd_vel (zeros = stopped):"
 for R in R1 R2; do
   if [ -f "$OUT/${R}_cmd_vel.txt" ]; then
     Z=$(grep -c "^  x: 0.0$" "$OUT/${R}_cmd_vel.txt" 2>/dev/null || echo 0)
-    echo "   $R: $Z zero-velocity Twist messages observed on /$R/cmd_vel"
+    # Honest label: this total counts EVERY zero Twist, which includes the legitimate
+    # stop while a robot dwells in the dock -- not only the denial stops. The evidence
+    # that isolates denial is the pose freeze below, cross-referenced with the DB times.
+    echo "   $R: $Z zero-velocity Twist messages on /$R/cmd_vel (denial stops AND dwell stops)"
   fi
 done
 
 echo
 echo " Ground-truth pose (a denied robot's x/y stops changing):"
-grep "POSE" "$OUT/fake_robot.log" 2>/dev/null | head -30 || echo "(no fake_robot.log)"
+grep "POSE" "$OUT/fake_robot.log" 2>/dev/null | head -30
 
 echo
 echo "Full logs: $OUT"
