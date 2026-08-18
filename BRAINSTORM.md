@@ -60,14 +60,16 @@ a monotonically increasing number issued with each grant, which the protected re
 validates, rejecting any write carrying a token lower than the highest it has seen. Chubby,
 ZooKeeper, etcd, Kubernetes, HDFS and Cassandra all do this.
 
-**FleetMem has leases but no fencing token.** A robot paused mid-motion can wake after its
+**FleetMem now implements this** (see `scripts/verify_fencing.py`). Before this round it
+had leases but no token: A robot paused mid-motion can wake after its
 lease lapsed while another robot legitimately holds the dock — and nothing stops the first
 robot's *actuator*. The lease bounds the claim; it does not bound the machine.
 
-This is the single most credible criticism available, and it is also cheap: add a
-monotonic `epoch` to `resource_claims`, return it on grant, require it on every act, and
-reject stale epochs. **Recommendation: build this, or name it out loud as known-missing.**
-Naming it is worth more than pretending it is finished.
+✅ **BUILT.** `resource_claims.epoch` is allocated inside the same serializable transaction
+as the claim, so it is monotonic and never reused. `memory.act()` authorises every
+irreversible action against it and raises `StaleFenceError` when superseded. Verified:
+R1 pauses past its lease, R2 takes the dock at a higher epoch, R1's act is rejected —
+*"stale fence on dock-f: presented epoch 1, current is 2"*.
 
 ### 🟠 Bi-temporal memory — event time vs ingestion time
 
@@ -108,17 +110,18 @@ and a genuinely different failure class from the one we solve.
 | **Agentic Memory Design** | **Strong.** Vector + transactional in one system, no dual-write, isolation in the index prefix, leases, checkpoints. Proven against managed CockroachDB, including the negative case. |
 | **Technical Implementation** | **Strong**, and the bug history helps rather than hurts: three false-reporting bugs and a retry-swallowing regression were found *and fixed*, each recorded with its root cause. |
 | **Real-World Impact** | **Good, undersold.** The ISO 3691-4 audit angle is sitting there unused. |
-| **Production Readiness** | **Good.** Least-privilege MCP, typed failures, pooling (1065ms → 20ms), node-kill measured, hardened deployment. Weakened by the missing fencing token. |
+| **Production Readiness** | **Strong.** Least-privilege MCP, typed failures, pooling (1065ms → 20ms), node-kill measured, hardened deployment, and fencing tokens closing the lease-alone gap. |
 | **Creativity & Originality** | **Strong.** AWS retired RoboMaker; robot fleets still coordinate through ephemeral in-process state. Nobody else will bring a database to this fight. |
 
 ## Biggest remaining weaknesses, in order
 
-1. **No fencing token.** Correctness gap with a known standard answer.
-2. **Simulated robots.** Say it first; a ROS 2 bridge is the real fix.
-3. **No staleness handling.** A named open problem in the field, unaddressed here.
-4. **Single region.** "Globally distributed" is currently untested.
-5. **No load evidence.** "At real scale" appears in the criteria; the largest test run was six concurrent claimants.
+1. **Simulated robots.** Say it first; a ROS 2 bridge is the real fix.
+2. **No staleness handling.** A named open problem in the field, unaddressed here.
+3. **Single region.** "Globally distributed" is currently untested.
+4. **No load evidence.** "At real scale" appears in the criteria; the largest test run was six concurrent claimants.
 
 ## If there is time for exactly one more thing
-**Fencing tokens.** It closes the one correctness hole, it is ~30 lines plus a test, and it
-turns the sharpest question a judge could ask into a slide.
+**Bi-temporal memory** — separate event time from ingestion time on `fleet_memory`. Two
+columns and a filter, and it unlocks both staleness handling (weakness 2) and the audit
+question ISO 3691-4 implies: *"what did the fleet believe on Tuesday, and why did it act
+that way?"*
