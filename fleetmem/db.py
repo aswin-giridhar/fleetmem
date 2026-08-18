@@ -12,6 +12,7 @@ everywhere rather than in most places:
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import time
 from contextlib import contextmanager
@@ -20,6 +21,7 @@ from typing import Any, Iterator, Sequence
 
 import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from .config import CONFIG
 from .errors import MemoryBackendError
@@ -32,20 +34,45 @@ BASE_BACKOFF = 0.05
 
 
 class Database:
-    def __init__(self, dsn: str | None = None):
+    """Pooled access to CockroachDB.
+
+    The pool matters more than it looks. Opening a connection to a managed cluster costs a
+    full TLS handshake — measured at ~1.0s from us-west-2 to a London cluster — so a
+    connect-per-query design makes every claim and every recall pay that toll, and the
+    agent looks slow when the database is fine. Reusing warm connections removes it.
+    """
+
+    def __init__(self, dsn: str | None = None, min_size: int = 2, max_size: int = 12):
         self.dsn = dsn or CONFIG.dsn
+        self._pool: ConnectionPool | None = None
+        self._min, self._max = min_size, max_size
+
+    def _get_pool(self) -> ConnectionPool:
+        if self._pool is None:
+            try:
+                self._pool = ConnectionPool(
+                    self.dsn, min_size=self._min, max_size=self._max,
+                    kwargs={"row_factory": dict_row},
+                    open=True, timeout=20,
+                )
+                self._pool.wait(timeout=25)
+            except Exception as exc:
+                self._pool = None
+                raise MemoryBackendError(f"cannot reach CockroachDB: {exc}") from exc
+        return self._pool
 
     @contextmanager
     def connect(self, autocommit: bool = True) -> Iterator[psycopg.Connection]:
+        pool = self._get_pool()
         try:
-            conn = psycopg.connect(self.dsn, autocommit=autocommit, row_factory=dict_row)
-        except psycopg.Error as exc:
-            # Connection-level failure is an outage, never "no data".
-            raise MemoryBackendError(f"cannot reach CockroachDB: {exc}") from exc
-        try:
-            yield conn
-        finally:
-            conn.close()
+            with pool.connection() as conn:
+                conn.autocommit = autocommit
+                yield conn
+        except MemoryBackendError:
+            raise
+        except psycopg.OperationalError as exc:
+            # A dead pooled connection is an outage, never "no data".
+            raise MemoryBackendError(f"lost connection to CockroachDB: {exc}") from exc
 
     def run_in_txn(self, fn, *, max_attempts: int = MAX_ATTEMPTS) -> Any:
         """Run fn(cursor) in a transaction, retrying only genuine serialization conflicts.
@@ -74,6 +101,11 @@ class Database:
                     continue
                 raise
         raise MemoryBackendError(f"transaction failed after {max_attempts} attempts: {last}")
+
+    def close(self) -> None:
+        if self._pool is not None:
+            self._pool.close()
+            self._pool = None
 
     def query(self, sql: str, params: Sequence[Any] = ()) -> list[dict]:
         with self.connect() as conn:
@@ -120,3 +152,7 @@ class Database:
 
 
 DB = Database()
+
+# Close the pool on interpreter shutdown; otherwise psycopg warns about worker threads
+# that outlive the process, which buries real output in noise.
+atexit.register(DB.close)

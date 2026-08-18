@@ -103,10 +103,17 @@ set -x
 mkdir -p /opt/fleetmem/app/certs
 curl -sSL -o /opt/fleetmem/app/certs/root.crt \
   "https://cockroachlabs.cloud/clusters/$CLUSTER_ID/cert"
+chmod 755 /opt/fleetmem
 chown -R fleetmem:fleetmem /opt/fleetmem
 chmod 600 /opt/fleetmem/app/.env
 
-"\$PY" -m pip install -e . || { echo "PIP INSTALL FAILED"; }
+# A virtualenv, not the system interpreter. On Amazon Linux 2023 pip installs into
+# /usr/local/lib/python3.11/site-packages, which is NOT on /usr/bin/python3.11's sys.path —
+# so a "successful" pip install produces "No module named uvicorn" at runtime. A venv makes
+# the interpreter and its packages the same thing by construction.
+"\$PY" -m venv /opt/fleetmem/venv
+/opt/fleetmem/venv/bin/pip install --quiet --upgrade pip
+/opt/fleetmem/venv/bin/pip install --quiet -e . || echo "PIP INSTALL FAILED"
 
 # --- 3. deny the application user any route to instance metadata ------------------
 # user-data and the instance role are readable via 169.254.169.254. The app never needs
@@ -124,7 +131,7 @@ After=network-online.target
 User=fleetmem
 Group=fleetmem
 WorkingDirectory=/opt/fleetmem/app
-ExecStart=__PYBIN__ -m uvicorn fleetmem.api:app --host 127.0.0.1 --port 8000
+ExecStart=/opt/fleetmem/venv/bin/python -m uvicorn fleetmem.api:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes
@@ -138,7 +145,6 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 [Install]
 WantedBy=multi-user.target
 SVCEOF
-sed -i "s|__PYBIN__|\$PY|" /etc/systemd/system/fleetmem.service
 
 # --- 4. TLS via Caddy + automatic Let's Encrypt on a nip.io hostname ---------------
 IP=\$(curl -sS -H "X-aws-ec2-metadata-token: \$(curl -sS -X PUT \
@@ -153,16 +159,7 @@ dnf install -y caddy >/dev/null 2>&1 || true
 
 cat > /etc/caddy/Caddyfile <<CADDYEOF
 \$HOST {
-    # Boot log, so a failed deploy is diagnosable without shell access. Contains no
-    # secrets: the block that writes .env runs with tracing disabled.
-    handle /_boot* {
-        root * /var/log
-        rewrite * /fleetmem-boot.log
-        file_server
-    }
-    handle {
-        reverse_proxy 127.0.0.1:8000
-    }
+    reverse_proxy 127.0.0.1:8000
 }
 CADDYEOF
 
@@ -196,7 +193,7 @@ echo
 echo "First boot installs dependencies and obtains a certificate; allow ~4 minutes."
 echo "  until curl -sf https://$HOST/healthz; do sleep 15; done"
 echo
-echo "If it does not come up, read the boot log:  curl -s https://$HOST/_boot | tail -60"
+echo "If it does not come up:  ssh -i $KEYFILE ec2-user@$IP 'sudo journalctl -u fleetmem -n50'"
 echo "Or connect:  ssh -i $KEYFILE ec2-user@$IP"
 echo
 echo "NOTE: secrets reach the instance through user-data. IMDSv2 is required, the hop limit"

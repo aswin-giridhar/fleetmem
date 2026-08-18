@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Agentic memory for autonomous robot fleets, on CockroachDB + AWS"
 requires-python = ">=3.11"
 dependencies = [
-    "psycopg[binary]>=3.2",
+    "psycopg[binary,pool]>=3.2",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "boto3>=1.35",
