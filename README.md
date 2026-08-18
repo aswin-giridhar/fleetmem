@@ -74,7 +74,26 @@ predicate — so expired claims are reaped **inside the same serializable transa
 next claim attempt. Reap-then-claim is therefore atomic: two robots racing for a resource
 whose holder has crashed still produce exactly one winner.
 
-### 4. A killed worker resumes without replaying side effects
+### 4. A paused robot cannot act on a lease it has already lost
+
+A lease bounds the **claim**; it does not bound the **machine**. A robot paused by GC or a
+network partition can wake after its lease lapsed and still be physically moving — the
+classic gap that leases alone never close.
+
+Every grant therefore issues a monotonically increasing **fencing token**, and every
+irreversible act is authorised against it:
+
+```python
+grant = memory.claim("dock-3", "R1")     # -> {"epoch": 7, ...}
+memory.act("dock-3", "R1", grant["epoch"])   # raises StaleFenceError if superseded
+```
+
+`scripts/verify_fencing.py` asserts the case that matters: R1 pauses past its lease, R2
+legitimately takes the dock at a higher epoch, and R1's attempt to act is rejected —
+*"stale fence on dock-f: presented epoch 1, current is 2"*. This is the same mechanism
+Chubby, ZooKeeper, etcd and Kubernetes use.
+
+### 5. A killed worker resumes without replaying side effects
 
 `agent_runs` checkpoints each step durably, so a worker that dies mid-task resumes where it
 stopped rather than repeating physical actions it already performed.
@@ -167,8 +186,8 @@ uv run uvicorn fleetmem.api:app --host 0.0.0.0 --port 8000
 
 ### What you should see
 
-`scripts/verify_memory.py` and `scripts/verify_leases.py` assert the core properties and
-fail loudly if any regress:
+`scripts/verify_memory.py`, `verify_leases.py` and `verify_fencing.py` assert the core
+properties and fail loudly if any regress:
 
 ```
 1. CLAIM RACE     R1: DENIED (holder is R2 -> re-route) / R2: GRANTED   -> 1 live claim
@@ -183,6 +202,14 @@ $ uv run python scripts/verify_leases.py
 3. CRASHED ROBOT   lease lapses, R7 reclaims the abandoned dock
 4. HARD CASE       two robots race for an EXPIRED claim -> still exactly one winner
 ALL LEASE CHECKS PASSED
+
+$ uv run python scripts/verify_fencing.py
+1. GRANT           issues a fencing token; the holder may act
+2. MONOTONIC       successive grants advance the token
+3. PAUSED ROBOT    stale epoch REJECTED — the actuator is fenced, not just the claim
+4. CURRENT HOLDER  unaffected
+5. RACE            one grant, one token
+ALL FENCING CHECKS PASSED
 ```
 
 In the UI, **⚡ Race R1 + R2 for dock-3** launches two agents at one dock simultaneously.

@@ -125,7 +125,12 @@ class Database:
                 cur.execute(sql, params)
 
     def apply_schema(self) -> None:
-        sql = (Path(__file__).parent / "schema.sql").read_text()
+        raw = (Path(__file__).parent / "schema.sql").read_text()
+        # Strip line comments BEFORE splitting on ';'. A semicolon inside a comment would
+        # otherwise cut a CREATE TABLE in half, and the resulting syntax error points at
+        # the prose rather than the cause.
+        sql = "\n".join(line.split("--")[0] if "--" in line and "'" not in line else line
+                        for line in raw.splitlines())
         with self.connect() as conn:
             with conn.cursor() as cur:
                 for stmt in [s.strip() for s in sql.split(";") if s.strip()]:

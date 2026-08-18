@@ -43,6 +43,13 @@ CREATE TABLE IF NOT EXISTS resource_claims (
     resource_id     STRING NOT NULL,
     robot_id        STRING NOT NULL,
     purpose         STRING,
+    -- Fencing token. A lease bounds the CLAIM, not the MACHINE. A robot
+    -- paused by GC or a network partition can resume after its lease lapsed, while another
+    -- robot legitimately holds the dock — and nothing stops the first robot's actuator.
+    -- The standard remedy (Chubby, ZooKeeper, etcd, Kubernetes) is a monotonically
+    -- increasing token issued with each grant, which the protected resource validates,
+    -- rejecting any action carrying a token lower than the highest it has seen.
+    epoch           INT8 NOT NULL DEFAULT 1,
     claimed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- Leases. A robot that crashes must not hold a dock forever, so every claim carries an
     -- expiry that a live robot renews by heartbeat. The unique index predicate CANNOT test

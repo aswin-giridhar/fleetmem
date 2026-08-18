@@ -15,11 +15,29 @@ import psycopg
 
 from .db import DB, Database
 from .embeddings import embed, to_pgvector
-from .errors import ResourceHeldError
+from .errors import FleetMemError, ResourceHeldError
 
 log = logging.getLogger("fleetmem.memory")
 
 UNIQUE_VIOLATION = "23505"
+
+
+class StaleFenceError(FleetMemError):
+    """An actor tried to act with an outdated fencing token.
+
+    Raised when a robot that believes it holds a resource presents an epoch lower than the
+    current grant — the signature of a process that paused past its lease and woke up still
+    intending to move. Distinct from ResourceHeldError: this actor is not merely late to
+    the claim, it is acting on a belief the cluster has already superseded.
+    """
+
+    def __init__(self, resource_id: str, presented: int, current: int | None):
+        self.resource_id = resource_id
+        self.presented = presented
+        self.current = current
+        super().__init__(
+            f"stale fence on {resource_id}: presented epoch {presented}, "
+            f"current is {current if current is not None else 'no live claim'}")
 
 
 class FleetMemory:
@@ -85,15 +103,25 @@ class FleetMemory:
                      AND expires_at <= now()""",
                 (self.fleet_id, resource_id),
             )
+            # Next fencing token for this resource. Monotonic because the read and the
+            # insert happen inside one serializable transaction: a concurrent claimant
+            # either sees this row or conflicts and retries, never reuses the number.
+            cur.execute(
+                """SELECT COALESCE(MAX(epoch), 0) + 1 AS next FROM resource_claims
+                   WHERE fleet_id = %s AND resource_id = %s""",
+                (self.fleet_id, resource_id),
+            )
+            next_epoch = cur.fetchone()["next"]
             try:
                 cur.execute(
                     """
                     INSERT INTO resource_claims
-                        (fleet_id, resource_id, robot_id, purpose, expires_at)
-                    VALUES (%s, %s, %s, %s, now() + (%s::INT * INTERVAL '1 second'))
-                    RETURNING id, resource_id, robot_id, claimed_at, expires_at
+                        (fleet_id, resource_id, robot_id, purpose, epoch, expires_at)
+                    VALUES (%s, %s, %s, %s, %s,
+                            now() + (%s::INT * INTERVAL '1 second'))
+                    RETURNING id, resource_id, robot_id, epoch, claimed_at, expires_at
                     """,
-                    (self.fleet_id, resource_id, robot_id, purpose, lease),
+                    (self.fleet_id, resource_id, robot_id, purpose, next_epoch, lease),
                 )
                 return {"granted": True, **cur.fetchone()}
             except psycopg.errors.UniqueViolation:
@@ -117,6 +145,32 @@ class FleetMemory:
             raise ResourceHeldError(resource_id, result.get("holder"))
         self.record_event(robot_id, "claim_granted", {"resource_id": resource_id})
         return result
+
+    def act(self, resource_id: str, robot_id: str, epoch: int) -> dict:
+        """Authorise a physical action against a fencing token.
+
+        Every irreversible act should pass through here. A robot that paused past its lease
+        still believes it holds the dock; its epoch is what gives it away. Checking the
+        holder alone is not enough — by the time it wakes, another robot may hold the
+        resource under a NEWER epoch, and the sleeper's own identity check would pass if it
+        happened to reclaim it in between.
+        """
+        rows = self.db.query(
+            """SELECT robot_id, epoch FROM resource_claims
+               WHERE fleet_id = %s AND resource_id = %s AND released_at IS NULL
+                 AND expires_at > now()""",
+            (self.fleet_id, resource_id),
+        )
+        current = rows[0] if rows else None
+        if current is None or current["epoch"] != epoch or current["robot_id"] != robot_id:
+            self.record_event(robot_id, "fence_rejected", {
+                "resource_id": resource_id, "presented_epoch": epoch,
+                "current_epoch": current["epoch"] if current else None,
+                "current_holder": current["robot_id"] if current else None})
+            raise StaleFenceError(resource_id, epoch,
+                                  current["epoch"] if current else None)
+        return {"authorised": True, "resource_id": resource_id,
+                "robot_id": robot_id, "epoch": epoch}
 
     def release(self, resource_id: str, robot_id: str) -> bool:
         rows = self.db.query(

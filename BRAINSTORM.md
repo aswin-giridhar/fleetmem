@@ -1,112 +1,124 @@
-# FleetMem — What's Good, What Could Be Better
+# FleetMem — Assessment, Round 3
 
-Round 2, written 2026-08-18 18:15 UTC, after leases, node-kill, live AWS and the 3D view.
-Round 1's assessment is superseded; where an item has since been *done* it is marked.
-
----
-
-## What is genuinely good
-
-### 1. The core claim is proven, including the negative case ✅
-Two barrier-synchronised agents race for one dock; exactly one wins. **Dropping the index
-reproduces the collision** (2 holders). A gate nothing can fail is a bug in a safety
-costume — this one demonstrably separates.
-
-### 2. It reframes a database property as an agent-safety mechanism
-> For an agent, memory is the input to an **action**. A lost or racy write doesn't show a
-> stale page — it makes the agent do the irreversible thing **twice**.
-
-Serializable isolation stops being "a database feature" and becomes "the reason two robots
-don't collide". That is the answer to *"insight into what makes agentic systems different"*.
-
-### 3. `23505` vs `40001` — and now leases ✅
-A unique violation is **deterministic** (someone holds it, and will until release); a
-serialization failure is **transient** (retry). Most code lumps both into "DB error, retry"
-and spins forever. FleetMem re-routes on the former, retries the latter.
-
-Leases complete the picture: the unique index predicate *cannot* test expiry, because
-`now()` is not immutable and cannot appear in an index predicate. So expired claims are
-reaped **inside the same serializable transaction** as the next claim. Reap-then-claim is
-atomic, and `verify_leases.py` proves the hard case — two robots racing for a **crashed**
-robot's dock still yield exactly one winner.
-
-### 4. No dual-write
-Lesson row and embedding commit together. Every Pinecone-plus-Postgres competitor has a
-window where one exists without the other, and the drift is **silent**.
-
-### 5. Resilience is measured, not claimed ✅
-80 operations, 56 after `docker kill`, **0 failures**. And it kills a node the client is
-*not* connected to and says so — the honest framing, not the flattering one.
-
-### 6. The system does not report falsely ✅
-Three separate false-reporting bugs were found and fixed:
-- the header showed `reasoning: bedrock` while running the local fallback;
-- the probe then "verified" Bedrock by calling **STS**, which succeeds with credentials that
-  have no Bedrock access at all — so it lied more convincingly;
-- a race that failed entirely returned **HTTP 200 with an empty list**, because exceptions
-  in worker threads never reach the caller.
-
-All three shared one root cause: *checking something adjacent to the thing being claimed.*
-The probe now performs a real inference call.
-
-### 7. Provider-agnostic reasoning ✅
-Anthropic inference profiles turned out to be unavailable in this AWS account. Because the
-reasoner moved to the **Converse API**, the fix was a config value, not a rewrite — and
-`FALLBACK_MODELS` degrades to another provider rather than to no agent.
+Written 2026-08-18 after the build was complete and deployed, and after researching how this
+problem is actually solved in industry. Rounds 1 and 2 are superseded; most of their
+high-value items are now built.
 
 ---
 
-## What could be improved — ranked by value per hour
+## Is the idea good? — what the research says
 
-### 🔴 Blocking the submission
-| # | Item | Note |
-|---|---|---|
-| **B1** | **Demo URL** | Needs one IAM policy (`AmazonEC2FullAccess`). `infra/deploy_ec2.sh` is written and waiting. |
-| **B2** | **Video < 3 min** | Everything it must show now exists and works. |
-| **B3** | **Read-only MCP service account** | Console action; makes "used safely" concrete. |
+Three findings from industry and current agent-memory research, and what each means for us.
 
-### 🟡 High value if time remains
-| # | Idea | Why |
-|---|---|---|
-| **I1** | **Time-travel audit** via `AS OF SYSTEM TIME` | *"What did the fleet believe at 14:32, and why did R3 act on it?"* CockroachDB gives this nearly free and it is a superb answer to agent auditability. ~45 min. |
-| **I2** | **Load evidence** | The criteria say "at real scale" and nobody has run 500 robots. A short script producing a claims/sec figure is cheap and quotable. ~30 min. |
-| **I3** | **Contradiction detection** | Two robots report *opposite* lessons about one location. Which wins — recency, corroboration count, measured outcome? A real agentic-memory problem with no standard answer. |
-| **I4** | **Memory consolidation / decay** | Agent memory grows unboundedly and retrieval quality collapses. Merging near-duplicates in one transaction is genuinely novel — nobody demos *forgetting*. |
-| **I5** | **Multi-region** | "Globally distributed" is CockroachDB's headline and the demo is single-region. |
+### 1. The architecture matches what production agent memory is independently converging on ✅
 
-### 🟢 Bigger, but the most valuable direction
-| # | Idea | Why |
-|---|---|---|
-| **I6** | **Real ROS 2 bridge** | A thin `rclpy` node on real topics turns "simulated fleet" into "drop-in for an actual ROS stack" — the single biggest credibility jump available, and it directly addresses the main weakness below. |
-| **I7** | **Learned-from-outcome memory** | Lessons are currently *asserted*. Record whether acting on one actually helped, and weight recall by measured usefulness rather than cosine distance alone. Turns memory from storage into learning. |
-| **I8** | **Priority / preemption** | A robot at 4% battery should preempt a routine delivery for a charger, without losing the exactly-one guarantee. |
+A 2026 survey of agent-memory systems lists what production actually requires: *"vector
+search capability for semantic retrieval, SQL or structured queries for history and
+metadata, **ACID transactions if multiple agents share state**, and scalability as your
+memory corpus grows."*
+
+That is a description of CockroachDB, arrived at from the agent side rather than the
+database side. The same surveys classify memory systems as **vector-only** (fast, weak on
+temporal/relational questions) or **vector + knowledge graph** (better for "who owns what"
+and "what changed when").
+
+FleetMem is a third shape those taxonomies mostly omit: **vector + transactional
+relational**. "Who owns what" is not inferred from a graph — it is a `UNIQUE` constraint
+that is *enforced*, not merely recorded. For a fleet taking physical actions, an enforced
+answer beats a queryable one.
+
+### 2. Memory failures are the top production problem — and mostly *silent* ✅
+
+Reporting on 2025 deployments found memory-related failures were **the most frequently
+reported category of reliability issue**, and that *"AI agent memory remains among the most
+common points of silent failure."* Named failure modes:
+
+| Named failure mode | FleetMem's position |
+|---|---|
+| **Multi-agent contamination** — "losing track of who said what" | ✅ Every lesson carries `robot_id`, and every vector records the embedder that produced it |
+| **Stale memory / staleness detection** (called an open problem) | ❌ **Not addressed.** No TTL, decay, or supersession on lessons |
+| **Retrieval beyond similarity** — needs temporal metadata, reranking, lifecycle | 🟡 Partial: timestamps and locations exist; no reranking or lifecycle |
+| **Silent degradation** | ✅ Directly targeted — three false-reporting bugs found and fixed during the build |
+
+### 3. The domain is moving this way, fast ✅
+
+Amazon shipped **DeepFleet** (July 2025), a generative-AI system coordinating robot routes,
+reporting ~10% higher fleet speed. Industry commentary is blunt that *"fleet management is
+where AMR deployments either scale to deliver ROI or collapse under coordination
+complexity."* The problem FleetMem targets is the one the sector says decides outcomes.
 
 ---
 
-## Weaknesses I would raise if I were judging
+## What is commonly missed — and what we should take from it
 
-1. **It is a simulation, not real robots.** The honest mitigation is to say so plainly on
-   camera — the *memory layer* is real, running on managed CockroachDB, and only the robot
-   bodies are simulated. I6 is the real fix.
-2. **Single region.** The global-distribution claim is currently untested here.
-3. **No load evidence.** "At real scale" is in the criteria and unaddressed (I2).
-4. **The agent's reasoning is shallow.** Nova picks a dock and a speed. Genuinely
-   interesting agentic behaviour — negotiation, preemption, planning around *predicted*
-   contention — is not there yet.
-5. ~~Claims never expire~~ ✅ fixed by leases.
-6. ~~AWS is stubbed~~ ✅ fixed — Titan, Nova and S3 all live.
+### 🔴 Fencing tokens — the real gap, and the most valuable thing to build next
+
+The classic distributed-locking literature is explicit that **a lease alone is not
+sufficient**. A process that pauses — GC, scheduler starvation, a network partition — can
+resume *after* its lease expired and still act. The standard remedy is a **fencing token**:
+a monotonically increasing number issued with each grant, which the protected resource
+validates, rejecting any write carrying a token lower than the highest it has seen. Chubby,
+ZooKeeper, etcd, Kubernetes, HDFS and Cassandra all do this.
+
+**FleetMem has leases but no fencing token.** A robot paused mid-motion can wake after its
+lease lapsed while another robot legitimately holds the dock — and nothing stops the first
+robot's *actuator*. The lease bounds the claim; it does not bound the machine.
+
+This is the single most credible criticism available, and it is also cheap: add a
+monotonic `epoch` to `resource_claims`, return it on grant, require it on every act, and
+reject stale epochs. **Recommendation: build this, or name it out loud as known-missing.**
+Naming it is worth more than pretending it is finished.
+
+### 🟠 Bi-temporal memory — event time vs ingestion time
+
+Zep's temporal knowledge graph records **two** timestamps for every fact: *event time*
+(when it actually happened) and *ingestion time* (when the system learned it). FleetMem
+records only `created_at`, which conflates them.
+
+For a fleet this is not academic. "The floor near dock-1 is wet on rainy mornings" is a
+*recurring condition*, not an event at 08:14. And a lesson about a bay that has since been
+reconfigured should be retrievable-but-superseded, not silently authoritative. Two columns
+and a filter would let an agent ask *"what did the fleet believe on Tuesday, and why did it
+act that way?"* — which is also the audit question below.
+
+### 🟠 Regulatory audit trail — an unclaimed strength we already have
+
+AMRs fall under **ISO 3691-4** internationally and **ANSI/RIA R15.08** in the US. These
+require documented safety functions, performance levels, defined operational zones, and
+technical files supporting acceptance testing and incident reporting.
+
+FleetMem's `agent_events` table already records every decision, the memories recalled to
+make it, and which model produced it. **That is an incident-reconstruction record for an
+autonomous system** — and the submission currently sells it as "observability", which
+undersells it considerably. Reframing costs nothing and lands directly on Real-World Impact.
+
+### 🟡 Deadlock, not just collision
+
+Industry fleet managers *"sequence movements at intersections to avoid deadlock"*. FleetMem
+prevents two robots holding one resource, but not the cycle where A holds what B needs while
+B holds what A needs. A cycle detection query over `resource_claims` is a natural extension
+and a genuinely different failure class from the one we solve.
 
 ---
 
-## If I had one more hour
-**I2 (load evidence) + B3 (read-only MCP account).** Both are quick, and each directly
-answers a criterion currently supported by assertion rather than measurement.
+## Honest scorecard
 
-## If I had one more day
-**I6 (ROS 2 bridge) + I1 (time-travel audit) + I7 (outcome-weighted memory).**
-The first makes it real, the second makes it auditable, the third makes it actually learn.
+| Criterion | Assessment |
+|---|---|
+| **Agentic Memory Design** | **Strong.** Vector + transactional in one system, no dual-write, isolation in the index prefix, leases, checkpoints. Proven against managed CockroachDB, including the negative case. |
+| **Technical Implementation** | **Strong**, and the bug history helps rather than hurts: three false-reporting bugs and a retry-swallowing regression were found *and fixed*, each recorded with its root cause. |
+| **Real-World Impact** | **Good, undersold.** The ISO 3691-4 audit angle is sitting there unused. |
+| **Production Readiness** | **Good.** Least-privilege MCP, typed failures, pooling (1065ms → 20ms), node-kill measured, hardened deployment. Weakened by the missing fencing token. |
+| **Creativity & Originality** | **Strong.** AWS retired RoboMaker; robot fleets still coordinate through ephemeral in-process state. Nobody else will bring a database to this fight. |
 
-## The one-sentence version
-The memory layer is genuinely production-shaped and the safety argument is proven rather
-than asserted; the remaining weakness is that it is a *simulated* fleet, and the highest-value
-next step is making it drive a real one.
+## Biggest remaining weaknesses, in order
+
+1. **No fencing token.** Correctness gap with a known standard answer.
+2. **Simulated robots.** Say it first; a ROS 2 bridge is the real fix.
+3. **No staleness handling.** A named open problem in the field, unaddressed here.
+4. **Single region.** "Globally distributed" is currently untested.
+5. **No load evidence.** "At real scale" appears in the criteria; the largest test run was six concurrent claimants.
+
+## If there is time for exactly one more thing
+**Fencing tokens.** It closes the one correctness hole, it is ~30 lines plus a test, and it
+turns the sharpest question a judge could ask into a slide.
