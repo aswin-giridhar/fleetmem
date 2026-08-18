@@ -1,115 +1,112 @@
 # FleetMem — What's Good, What Could Be Better
 
-An honest assessment against the five judging criteria, plus enhancement ideas ranked by
-value-per-hour. Written 2026-08-18.
+Round 2, written 2026-08-18 18:15 UTC, after leases, node-kill, live AWS and the 3D view.
+Round 1's assessment is superseded; where an item has since been *done* it is marked.
 
 ---
 
 ## What is genuinely good
 
-### 1. The core claim is *proven*, not asserted — including the negative case
-Most submissions will say "CockroachDB guarantees consistency". This one demonstrates it:
-two barrier-synchronised agents race for one dock, exactly one wins, and **dropping the
-index reproduces the collision**. A gate that nothing can fail is a bug in a safety costume;
-this one demonstrably separates.
+### 1. The core claim is proven, including the negative case ✅
+Two barrier-synchronised agents race for one dock; exactly one wins. **Dropping the index
+reproduces the collision** (2 holders). A gate nothing can fail is a bug in a safety
+costume — this one demonstrably separates.
 
-### 2. It reframes a database feature as an agent-safety mechanism
-The strongest idea in the project is a sentence, not a line of code:
-
+### 2. It reframes a database property as an agent-safety mechanism
 > For an agent, memory is the input to an **action**. A lost or racy write doesn't show a
 > stale page — it makes the agent do the irreversible thing **twice**.
 
-Serializable isolation stops being "a database property" and becomes "the reason two robots
+Serializable isolation stops being "a database feature" and becomes "the reason two robots
 don't collide". That is the answer to *"insight into what makes agentic systems different"*.
 
-### 3. `23505` vs `40001` is a real engineering insight
-A unique violation is **deterministic**: someone holds it and will until they release. A
-serialization failure is **transient**: try again. Most code lumps both into "DB error, retry"
-— which spins forever against a dock that will never free. FleetMem distinguishes them and
-re-routes on the former. This is the kind of detail a Sales Engineering judge notices.
+### 3. `23505` vs `40001` — and now leases ✅
+A unique violation is **deterministic** (someone holds it, and will until release); a
+serialization failure is **transient** (retry). Most code lumps both into "DB error, retry"
+and spins forever. FleetMem re-routes on the former, retries the latter.
+
+Leases complete the picture: the unique index predicate *cannot* test expiry, because
+`now()` is not immutable and cannot appear in an index predicate. So expired claims are
+reaped **inside the same serializable transaction** as the next claim. Reap-then-claim is
+atomic, and `verify_leases.py` proves the hard case — two robots racing for a **crashed**
+robot's dock still yield exactly one winner.
 
 ### 4. No dual-write
-The lesson row and its embedding commit in one transaction. Every Pinecone-plus-Postgres
-competitor has a window where one exists without the other, and the drift is **silent** —
-distances still compute, answers still look plausible. This is the single most defensible
-technical argument in the submission.
+Lesson row and embedding commit together. Every Pinecone-plus-Postgres competitor has a
+window where one exists without the other, and the drift is **silent**.
 
-### 5. Isolation lives in the index, not in application code
-`VECTOR INDEX (fleet_id, embedding vector_cosine_ops)` means a bug in a `WHERE` clause
-cannot leak one fleet's memory into another's recall. The guarantee is structural.
+### 5. Resilience is measured, not claimed ✅
+80 operations, 56 after `docker kill`, **0 failures**. And it kills a node the client is
+*not* connected to and says so — the honest framing, not the flattering one.
 
-### 6. The system does not report falsely
-`/healthz` reports providers **resolved by probe**, not configured model names — an early
-version displayed "reasoning: bedrock" while running the local fallback, which was fixed
-precisely because a confident wrong claim is worse than an admission of ignorance. Typed
-errors keep "absent" and "broken" distinct. Every vector records which embedder produced it,
-so Titan and fallback vectors can never be silently mixed into one meaningless index.
+### 6. The system does not report falsely ✅
+Three separate false-reporting bugs were found and fixed:
+- the header showed `reasoning: bedrock` while running the local fallback;
+- the probe then "verified" Bedrock by calling **STS**, which succeeds with credentials that
+  have no Bedrock access at all — so it lied more convincingly;
+- a race that failed entirely returned **HTTP 200 with an empty list**, because exceptions
+  in worker threads never reach the caller.
 
-### 7. Domain choice is defensible on evidence
-AWS **retired RoboMaker** (2025-09-10) and robot fleets still coordinate through ephemeral
-DDS and in-process allocation. A verified gap in both sponsors' stacks, in a sector that is
-textbook CockroachDB and has never heard the pitch.
+All three shared one root cause: *checking something adjacent to the thing being claimed.*
+The probe now performs a real inference call.
+
+### 7. Provider-agnostic reasoning ✅
+Anthropic inference profiles turned out to be unavailable in this AWS account. Because the
+reasoner moved to the **Converse API**, the fix was a config value, not a rewrite — and
+`FALLBACK_MODELS` degrades to another provider rather than to no agent.
 
 ---
 
 ## What could be improved — ranked by value per hour
 
-### 🔴 High value, low effort
-
-| # | Idea | Why it matters | Effort |
-|---|---|---|---|
-| **I1** | **Attach IAM permissions + a real S3 bucket** | Turns AWS from a stub into a working component; **Stage One is pass/fail on this** | 5 min (console) |
-| **I2** | **Bedrock Titan embeddings live** | The fallback matches shared wording, not paraphrase. Titan makes "the floor is slippery near the loading door" recall the bay-12 lesson — a *much* better demo moment | 5 min once model access granted |
-| **I3** | **Node-kill resilience footage** | 3-node local cluster, `docker kill` one node mid-race, fleet keeps going. This is the "memory that never goes down" thesis made visible | 30 min |
-| **I4** | **Read-only MCP service account** | Makes "used correctly and safely" concrete: judges can point at a deliberately least-privileged account | 15 min |
-| **I5** | **Architecture diagram** | Explicitly invited by the submission form; cheap scoring | 20 min |
-
-### 🟡 High value, medium effort
-
-| # | Idea | Why it matters | Effort |
-|---|---|---|---|
-| **I6** | **Memory decay / consolidation job** | Agent memory grows unboundedly and retrieval quality collapses. A background job that merges near-duplicate lessons *in one transaction* and decays stale ones is genuinely novel — nobody demos forgetting | 1–2 h |
-| **I7** | **Confidence + contradiction detection** | Two robots report *contradictory* lessons about the same location. Which wins? Recency? Corroboration count? This is a real agentic-memory problem with no standard answer | 1–2 h |
-| **I8** | **Claim leases with TTL** | Today a crashed robot holds its dock forever. Real fleets need `expires_at` + heartbeat renewal, so a dead robot's claim is reclaimable. **This is the most glaring production gap** | 45 min |
-| **I9** | **Multi-region cluster** | "Globally distributed" is CockroachDB's headline and the demo is single-region. A second region with a follower read would show read-local/write-global | 1 h + credits |
-| **I10** | **Replay / time-travel using AS OF SYSTEM TIME** | "What did the fleet believe at 14:32, and why did R3 act on it?" CockroachDB gives this almost free, and it is a *fantastic* answer to agent auditability | 45 min |
-
-### 🟢 Strong ideas, larger effort
-
-| # | Idea | Why it matters |
+### 🔴 Blocking the submission
+| # | Item | Note |
 |---|---|---|
-| **I11** | **Learned-from-outcome memory** | Right now lessons are asserted. Close the loop: record whether acting on a lesson *helped*, and weight recall by measured usefulness rather than by cosine distance alone. Turns memory from storage into learning |
-| **I12** | **Priority + fairness in claims** | A charging-critical robot at 4% battery should preempt a routine delivery. Introduces priority into the claim protocol without losing the exactly-one guarantee |
-| **I13** | **Real ROS 2 bridge** | A thin `rclpy` node publishing/subscribing real topics would move this from "simulated fleet" to "drop-in for an actual ROS stack" — the single biggest credibility jump available |
-| **I14** | **Deadlock detection across claims** | Two robots each holding what the other needs. Classic, and a graph query over `resource_claims` detects it |
+| **B1** | **Demo URL** | Needs one IAM policy (`AmazonEC2FullAccess`). `infra/deploy_ec2.sh` is written and waiting. |
+| **B2** | **Video < 3 min** | Everything it must show now exists and works. |
+| **B3** | **Read-only MCP service account** | Console action; makes "used safely" concrete. |
+
+### 🟡 High value if time remains
+| # | Idea | Why |
+|---|---|---|
+| **I1** | **Time-travel audit** via `AS OF SYSTEM TIME` | *"What did the fleet believe at 14:32, and why did R3 act on it?"* CockroachDB gives this nearly free and it is a superb answer to agent auditability. ~45 min. |
+| **I2** | **Load evidence** | The criteria say "at real scale" and nobody has run 500 robots. A short script producing a claims/sec figure is cheap and quotable. ~30 min. |
+| **I3** | **Contradiction detection** | Two robots report *opposite* lessons about one location. Which wins — recency, corroboration count, measured outcome? A real agentic-memory problem with no standard answer. |
+| **I4** | **Memory consolidation / decay** | Agent memory grows unboundedly and retrieval quality collapses. Merging near-duplicates in one transaction is genuinely novel — nobody demos *forgetting*. |
+| **I5** | **Multi-region** | "Globally distributed" is CockroachDB's headline and the demo is single-region. |
+
+### 🟢 Bigger, but the most valuable direction
+| # | Idea | Why |
+|---|---|---|
+| **I6** | **Real ROS 2 bridge** | A thin `rclpy` node on real topics turns "simulated fleet" into "drop-in for an actual ROS stack" — the single biggest credibility jump available, and it directly addresses the main weakness below. |
+| **I7** | **Learned-from-outcome memory** | Lessons are currently *asserted*. Record whether acting on one actually helped, and weight recall by measured usefulness rather than cosine distance alone. Turns memory from storage into learning. |
+| **I8** | **Priority / preemption** | A robot at 4% battery should preempt a routine delivery for a charger, without losing the exactly-one guarantee. |
 
 ---
 
 ## Weaknesses I would raise if I were judging
 
-1. **It is a simulation, not real robots.** Honest, but a judge may discount it. *I13 is the
-   antidote*; failing that, say plainly on camera that the memory layer is real and only the
-   robot bodies are simulated.
-2. **Claims never expire** (I8). A crashed robot holds a dock forever. For a project whose
-   pitch is resilience, this is the sharpest inconsistency.
-3. **The local embedder is weak.** Matches shared words, not meaning. Fine as a fallback,
-   poor as the thing shown on camera (I2 fixes).
-4. **Single region.** The "globally distributed" claim is currently untested here (I9).
-5. **No load evidence.** "At real scale" appears in the criteria; nobody has run 500 robots.
-   A short load script producing a claims/sec number would be cheap and quotable.
+1. **It is a simulation, not real robots.** The honest mitigation is to say so plainly on
+   camera — the *memory layer* is real, running on managed CockroachDB, and only the robot
+   bodies are simulated. I6 is the real fix.
+2. **Single region.** The global-distribution claim is currently untested here.
+3. **No load evidence.** "At real scale" is in the criteria and unaddressed (I2).
+4. **The agent's reasoning is shallow.** Nova picks a dock and a speed. Genuinely
+   interesting agentic behaviour — negotiation, preemption, planning around *predicted*
+   contention — is not there yet.
+5. ~~Claims never expire~~ ✅ fixed by leases.
+6. ~~AWS is stubbed~~ ✅ fixed — Titan, Nova and S3 all live.
 
 ---
 
-## If I had exactly one more hour
+## If I had one more hour
+**I2 (load evidence) + B3 (read-only MCP account).** Both are quick, and each directly
+answers a criterion currently supported by assertion rather than measurement.
 
-**I8 (claim leases) + I3 (node-kill footage).**
+## If I had one more day
+**I6 (ROS 2 bridge) + I1 (time-travel audit) + I7 (outcome-weighted memory).**
+The first makes it real, the second makes it auditable, the third makes it actually learn.
 
-Leases close the most obvious production hole and take ~45 minutes; the node-kill shot
-delivers the thesis — *memory that never goes down* — as something a judge can watch rather
-than read. Together they raise Production Readiness, which is the criterion where a
-simulation is otherwise most vulnerable.
-
-## If I had exactly one more day
-
-**I13 (ROS 2 bridge) + I10 (time-travel audit) + I6 (consolidation).**
-The first makes it real, the second makes it auditable, the third makes it novel.
+## The one-sentence version
+The memory layer is genuinely production-shaped and the safety argument is proven rather
+than asserted; the remaining weakness is that it is a *simulated* fleet, and the highest-value
+next step is making it drive a real one.

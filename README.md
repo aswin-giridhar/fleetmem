@@ -64,7 +64,15 @@ The lesson row **and** its embedding are written in **one transaction**. There i
 where the row exists and the vector does not. A separate vector store cannot offer this, and
 the drift it causes is silent — distances still compute, answers still look plausible.
 
-### 3. A killed worker resumes without replaying side effects
+### 3. A crashed robot does not hold a dock forever
+
+Every claim carries a **lease** that a live robot renews by heartbeat. The unique index
+predicate cannot test expiry — `now()` is not immutable, so it cannot appear in an index
+predicate — so expired claims are reaped **inside the same serializable transaction** as the
+next claim attempt. Reap-then-claim is therefore atomic: two robots racing for a resource
+whose holder has crashed still produce exactly one winner.
+
+### 4. A killed worker resumes without replaying side effects
 
 `agent_runs` checkpoints each step durably, so a worker that dies mid-task resumes where it
 stopped rather than repeating physical actions it already performed.
@@ -107,12 +115,13 @@ stopped rather than repeating physical actions it already performed.
 
 | Service | Role |
 |---|---|
-| **Amazon Bedrock** | Titan Text Embeddings V2 (1024-dim) for fleet memory; Claude for agent planning. |
-| **AWS Lambda / S3** | Task ingestion and artifact storage. |
+| **Amazon Bedrock — Titan Text Embeddings V2** | Every lesson a robot learns is embedded (1024-dim) and stored in CockroachDB in the same transaction as its row. Measurably better than the local fallback: the relevant lesson sits at distance **0.17** vs **0.86–0.92** for unrelated memories. |
+| **Amazon Bedrock — Amazon Nova Lite (Converse API)** | Agent planning. Given the task, the fleet's recalled lessons and which resources others hold, it picks a target and a speed. Real output: *"To avoid the wet floor near dock-1 and the risk of pallet slipping at dock-3"* → chose dock-2 at reduced speed. Uses the **provider-agnostic Converse API**, so Nova / Claude / Llama / Mistral are a config change, with automatic fallback between them. |
+| **Amazon S3** | Bulk incident-report artifacts. The artifact is written **before** the memory row, so a lesson can never reference an object that was never stored. CockroachDB keeps the searchable memory and the `s3://` URI pointing back to the evidence. |
 
 Without AWS credentials the app **still runs**, on a deterministic local embedder and policy
-planner, and `/healthz` reports exactly which provider is live. The safety properties are
-database properties, not model properties.
+planner, and `/healthz` reports exactly which provider is live — probed by a real call, not
+read from config. The safety properties are database properties, not model properties.
 
 ---
 
@@ -140,7 +149,8 @@ uv run uvicorn fleetmem.api:app --host 0.0.0.0 --port 8000
 
 ### What you should see
 
-`scripts/verify_memory.py` asserts four properties and fails loudly if any regress:
+`scripts/verify_memory.py` and `scripts/verify_leases.py` assert the core properties and
+fail loudly if any regress:
 
 ```
 1. CLAIM RACE     R1: DENIED (holder is R2 -> re-route) / R2: GRANTED   -> 1 live claim
@@ -148,12 +158,43 @@ uv run uvicorn fleetmem.api:app --host 0.0.0.0 --port 8000
 3. CHECKPOINT     resumes at step 3, side effects not replayed
 4. RELEASE        constraint permits reuse, forbids double-holding
 ALL CHECKS PASSED
+
+$ uv run python scripts/verify_leases.py
+1. LIVE LEASE      R2 denied while R1's lease is live
+2. HEARTBEAT       a renewing robot keeps its dock
+3. CRASHED ROBOT   lease lapses, R7 reclaims the abandoned dock
+4. HARD CASE       two robots race for an EXPIRED claim -> still exactly one winner
+ALL LEASE CHECKS PASSED
 ```
 
 In the UI, **⚡ Race R1 + R2 for dock-3** launches two agents at one dock simultaneously.
 One wins; the other reads the winner's row and re-routes.
 
 ---
+
+## Resilience: measured, not claimed
+
+```bash
+./infra/cluster3.sh up                       # local 3-node cluster
+uv run python scripts/verify_resilience.py   # kills a node mid-workload
+```
+
+A continuous claim/release workload runs while one node is killed with `docker kill`:
+
+```
+t= 8s  *** docker kill crdb2 ***
+...
+operations total          : 80
+succeeded                 : 80
+failed                    : 0
+operations after the kill : 56
+VERDICT: PASS - the fleet's memory survived losing a node with zero failed writes
+```
+
+It kills a node the client is **not** connected to, and says so — losing the coordinating
+node is a different (also survivable) scenario, and conflating them would overstate the
+result. It runs locally because a managed Basic cluster cannot have a node killed, and
+implying otherwise on camera would be dishonest.
 
 ## Production considerations
 

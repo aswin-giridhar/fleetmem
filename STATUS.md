@@ -1,6 +1,6 @@
 # FleetMem — Build Status
 
-**Last updated:** 2026-08-18 17:30 UTC · **Submission deadline:** 2026-08-18 21:00 UTC
+**Last updated:** 2026-08-18 18:20 UTC · **Submission deadline:** 2026-08-18 21:00 UTC
 (read from the system clock, not estimated)
 
 ---
@@ -82,17 +82,19 @@ heard the pitch.
 ### Blocking the submission
 | # | Item | Consequence |
 |---|---|---|
-| **P1** | **AWS credentials** — none on this machine | **Stage One is pass/fail on ≥1 AWS service. Without this the submission DNQs regardless of code quality.** |
-| **P2** | Public GitHub repo + `LICENSE` | Hard requirement; licence must be GitHub-auto-detected in the About sidebar |
+| ~~P1~~ | ~~AWS credentials~~ ✅ **RESOLVED** — account 835863670059. S3, Titan v2 and Nova Lite all invoking. | Stage One requirement satisfied |
+| ~~P2~~ | ~~Public repo~~ ✅ **https://github.com/aswin-giridhar/fleetmem** (Apache-2.0) | Done |
 | **P3** | Functional demo URL | Hard requirement; must stay alive until **Sept 15** |
 | **P4** | Video < 3 min, public on YouTube/Vimeo | Hard requirement; must show the memory layer at work |
 
 ### Built but not yet wired
 | # | Item | State |
 |---|---|---|
-| P5 | Bedrock Titan embeddings | Code complete, **never executed** — blocked on P1 |
-| P6 | Bedrock Claude reasoning | Code complete, **never executed** — blocked on P1 |
-| P7 | Lambda / S3 integration | Not started — blocked on P1 |
+| ~~P5~~ | Bedrock Titan v2 embeddings | ✅ **LIVE** — recall distance 0.17 vs 0.86+ unrelated |
+| ~~P6~~ | Bedrock reasoning | ✅ **LIVE** via Converse API + Amazon Nova Lite. Anthropic profiles unavailable in this account; Converse made the swap a config change |
+| ~~P7~~ | S3 artifact store | ✅ **LIVE** — bucket created, artifacts round-tripped |
+| ~~P11~~ | Node-kill resilience | ✅ **DONE** — 80 ops, 56 after the kill, **0 failures** |
+| ~~NEW~~ | Claim leases | ✅ **DONE** — crashed robots no longer hold docks forever; reap-then-claim proven atomic |
 | P8 | MCP server read-only service account | MCP configured in `~/.claude.json`; the read-only account is not yet created |
 | P9 | ccloud CLI (3rd tool) | Not installed |
 | P10 | Agent Skills (4th tool) | Not integrated |
@@ -105,10 +107,10 @@ heard the pitch.
 
 | Requirement | Status |
 |---|---|
-| ≥2 CockroachDB tools | 🟡 Vector Indexing **verified on Cloud**; MCP configured, service account pending |
-| ≥1 AWS service | 🔴 **BLOCKED — no credentials** |
+| ≥2 CockroachDB tools | 🟢 Vector Indexing live on Cloud; MCP configured (read-only service account pending); ccloud CLI installed |
+| ≥1 AWS service | 🟢 **Bedrock (Titan v2 + Nova Lite) + S3, all invoking** |
 | CockroachDB as persistent memory | 🟢 Done and proven |
-| Public repo + OSS licence | 🔴 Not created |
+| Public repo + OSS licence | 🟢 https://github.com/aswin-giridhar/fleetmem (Apache-2.0) |
 | Functional demo URL | 🔴 No host chosen |
 | Video < 3 min | 🔴 Not recorded |
 | Text description / tool write-ups | 🟡 Template ready in private notes |
