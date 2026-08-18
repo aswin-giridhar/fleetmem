@@ -1,3 +1,5 @@
+<img src="docs/logo.png" alt="FleetMem" width="132" align="right"/>
+
 # FleetMem
 
 **Agentic memory for autonomous robot fleets — CockroachDB as the system of record, on AWS.**
@@ -5,8 +7,6 @@
 A fleet of warehouse robots shares **one** CockroachDB memory layer. Memory is what makes
 each agent competent — it recalls what the fleet has learned — and what makes it **safe**:
 two agents cannot take the same irreversible physical action.
-
-![FleetMem console](docs/console-3d.png)
 
 **Live demo → https://18-237-2-184.nip.io/**  ·  **Source → https://github.com/aswin-giridhar/fleetmem**
 
@@ -16,6 +16,18 @@ two agents cannot take the same irreversible physical action.
 > Two robots claiming one dock is a **collision**, not a duplicate email.
 
 ---
+
+## Architecture
+
+![FleetMem architecture](docs/architecture.jpg)
+
+The load-bearing path is numbered: a robot's odometry crosses the claim radius **(1)**, the
+agent opens a serializable transaction to claim the dock **(2)**, CockroachDB grants exactly
+one holder and returns a fencing epoch **(3)**, and only then is `/cmd_vel` published **(4)**.
+A denied robot receives `23505` and re-routes; a robot presenting a stale epoch is stopped at
+the actuator.
+
+![FleetMem console](docs/console-3d.png)
 
 ## Why robots
 

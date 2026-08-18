@@ -1,0 +1,51 @@
+flowchart LR
+  subgraph FLEET["Robot fleet"]
+    R1["Robot R1<br/>rclpy node"]
+    R2["Robot R2<br/>rclpy node"]
+  end
+
+  subgraph BRIDGE["FleetMem agent · EC2"]
+    B["fleetmem_bridge<br/>sub /odom · pub /cmd_vel"]
+    A["RobotAgent<br/>recall → decide → claim → act"]
+    API["FastAPI + WebSocket<br/>3D console"]
+  end
+
+  subgraph AWS["AWS"]
+    T["Bedrock<br/>Titan v2 embeddings"]
+    N["Bedrock<br/>Nova Pro reasoning"]
+    S3["S3<br/>incident artifacts"]
+  end
+
+  subgraph CRDB["CockroachDB Cloud · London"]
+    FM["fleet_memory<br/>VECTOR INDEX fleet_id, embedding<br/>bi-temporal + lifecycle"]
+    RC["resource_claims<br/>UNIQUE WHERE released_at IS NULL<br/>lease + fencing epoch"]
+    AR["agent_runs<br/>durable checkpoints"]
+    AE["agent_events<br/>audit trail"]
+  end
+
+  R1 -- odom --> B
+  R2 -- odom --> B
+  B -- cmd_vel --> R1
+  B -- cmd_vel --> R2
+  B --> A
+  API --> A
+
+  A -- "embed lesson" --> T
+  A -- "plan" --> N
+  A -- "store report" --> S3
+  S3 -. "s3:// URI" .-> FM
+
+  A -- "recall <=>" --> FM
+  A -- "claim / act" --> RC
+  A -- "checkpoint" --> AR
+  A -- "every decision" --> AE
+
+  RC -- "23505 denied<br/>stale fence" --> B
+  MCP["Managed MCP Server<br/>read-only account"] -.-> CRDB
+
+  classDef db fill:#1d6fe0,stroke:#0b3f8a,color:#fff
+  classDef aws fill:#f5a524,stroke:#8a5c00,color:#1a1a1a
+  classDef bridge fill:#2ecc8f,stroke:#0f5f42,color:#04150f
+  class FM,RC,AR,AE db
+  class T,N,S3 aws
+  class B,A,API bridge
