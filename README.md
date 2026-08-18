@@ -6,6 +6,8 @@ A fleet of warehouse robots shares **one** CockroachDB memory layer. Memory is w
 each agent competent — it recalls what the fleet has learned — and what makes it **safe**:
 two agents cannot take the same irreversible physical action.
 
+**Live demo → https://18-237-2-184.nip.io/**  ·  **Source → https://github.com/aswin-giridhar/fleetmem**
+
 > In a traditional app, a lost write shows someone a stale page.
 > For an agent, memory is the input to an **action** — so a lost or racy write means it does
 > the irreversible thing **twice**.
@@ -124,6 +126,22 @@ planner, and `/healthz` reports exactly which provider is live — probed by a r
 read from config. The safety properties are database properties, not model properties.
 
 ---
+
+## Deployment
+
+The demo runs on an EC2 instance in `us-west-2`, behind Caddy with an automatic Let's
+Encrypt certificate, talking to a CockroachDB Cloud Basic cluster in **London
+(`aws-eu-west-2`)**. `infra/deploy_ec2.sh` provisions it end to end.
+
+The application runs as an unprivileged user bound to `127.0.0.1:8000` under systemd
+hardening; only Caddy is exposed. IMDSv2 is required with a hop limit of 1, and the service
+user is firewalled away from `169.254.169.254`, so a compromised process cannot read
+instance metadata or user-data.
+
+**Connections are pooled.** Against a managed cluster a new connection costs a full TLS
+handshake — measured at ~1065ms cross-region — so a connect-per-query design made every
+claim pay it. With a warm pool the median query is **20ms** locally and **127ms** from
+us-west-2 to London, the latter being genuine round-trip distance.
 
 ## Run it
 

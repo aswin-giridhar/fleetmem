@@ -84,7 +84,7 @@ heard the pitch.
 |---|---|---|
 | ~~P1~~ | ~~AWS credentials~~ ✅ **RESOLVED** — account 835863670059. S3, Titan v2 and Nova Lite all invoking. | Stage One requirement satisfied |
 | ~~P2~~ | ~~Public repo~~ ✅ **https://github.com/aswin-giridhar/fleetmem** (Apache-2.0) | Done |
-| **P3** | Functional demo URL | Hard requirement; must stay alive until **Sept 15** |
+| ~~P3~~ | Functional demo URL | ✅ **https://18-237-2-184.nip.io/** — TLS valid to Nov 16 |
 | **P4** | Video < 3 min, public on YouTube/Vimeo | Hard requirement; must show the memory layer at work |
 
 ### Built but not yet wired
@@ -111,7 +111,7 @@ heard the pitch.
 | ≥1 AWS service | 🟢 **Bedrock (Titan v2 + Nova Lite) + S3, all invoking** |
 | CockroachDB as persistent memory | 🟢 Done and proven |
 | Public repo + OSS licence | 🟢 https://github.com/aswin-giridhar/fleetmem (Apache-2.0) |
-| Functional demo URL | 🔴 No host chosen |
+| Functional demo URL | 🟢 https://18-237-2-184.nip.io/ |
 | Video < 3 min | 🔴 Not recorded |
 | Text description / tool write-ups | 🟡 Template ready in private notes |
 
