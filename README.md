@@ -93,7 +93,44 @@ legitimately takes the dock at a higher epoch, and R1's attempt to act is reject
 *"stale fence on dock-f: presented epoch 1, current is 2"*. This is the same mechanism
 Chubby, ZooKeeper, etcd and Kubernetes use.
 
-### 5. A killed worker resumes without replaying side effects
+### 5. Memory has a lifecycle — it is not true forever
+
+Staleness is repeatedly named as one of the open problems in production agent memory:
+outdated preferences, resolved tasks and superseded facts quietly degrade retrieval. Every
+lesson therefore carries **two clocks and a lifecycle**:
+
+| Column | Meaning |
+|---|---|
+| `observed_at` | when the condition actually held (**event time**) |
+| `created_at` | when the fleet learned it (**ingestion time**) |
+| `valid_until` | for time-bounded facts — expires on its own |
+| `superseded_by` / `superseded_at` | retired by a correction, **not deleted** |
+| `recurrence` | marks a recurring condition, which does not decay like an event |
+
+```python
+memory.supersede(old_id, "R5", "dock-4 lane is blocked by racking since the refit")
+memory.recall("dock-4 lane")                       # returns only the correction
+memory.recall("dock-4 lane", as_of=yesterday)      # returns what the fleet believed then
+```
+
+That last line is the point. **"What did the fleet believe on Tuesday, and why did it act
+that way?"** is exactly what incident reconstruction under **ISO 3691-4** (international)
+and **ANSI/RIA R15.08** (US) requires of an autonomous system — and it is unanswerable if
+event time and ingestion time are conflated, or if corrections destroy the record.
+
+Recall also **reranks** rather than trusting cosine distance alone: a corroborated,
+recently-observed lesson outranks a stale low-confidence one, while a recurring condition
+is exempt from decay because it describes a pattern rather than an event.
+
+### 6. Deadlock is a different failure from collision
+
+The unique index stops two robots holding one resource. It does nothing about A holding what
+B needs while B holds what A needs — every claim is individually valid and the fleet still
+stops. `resource_waits` records what each robot is blocked on, `detect_deadlocks()` finds
+cycles in the wait-for graph, and `break_deadlock()` makes the youngest claim yield and
+records who yielded. Verified to detect a real cycle **and** to not fire on a plain queue.
+
+### 7. A killed worker resumes without replaying side effects
 
 `agent_runs` checkpoints each step durably, so a worker that dies mid-task resumes where it
 stopped rather than repeating physical actions it already performed.
@@ -186,8 +223,10 @@ uv run uvicorn fleetmem.api:app --host 0.0.0.0 --port 8000
 
 ### What you should see
 
-`scripts/verify_memory.py`, `verify_leases.py` and `verify_fencing.py` assert the core
-properties and fail loudly if any regress:
+Five scripts assert the core properties and fail loudly if any regress —
+`verify_memory.py`, `verify_leases.py`, `verify_fencing.py`,
+`verify_memory_lifecycle.py`, `verify_deadlock.py` — plus `verify_load.py` and
+`verify_resilience.py` for throughput and node loss:
 
 ```
 1. CLAIM RACE     R1: DENIED (holder is R2 -> re-route) / R2: GRANTED   -> 1 live claim
@@ -210,12 +249,52 @@ $ uv run python scripts/verify_fencing.py
 4. CURRENT HOLDER  unaffected
 5. RACE            one grant, one token
 ALL FENCING CHECKS PASSED
+
+$ uv run python scripts/verify_memory_lifecycle.py
+1. TWO CLOCKS      event time and ingestion time recorded separately
+2. SUPERSESSION    correction retires the old lesson without deleting it
+3. TIME TRAVEL     the earlier belief is reconstructible (as_of)
+4. VALIDITY        a time-bounded fact expires on its own
+5. RERANKING       a recurring condition outranks a decayed one-off
+ALL MEMORY LIFECYCLE CHECKS PASSED
+
+$ uv run python scripts/verify_deadlock.py
+3. DETECT          R1 -> R2 -> R1 identified from the wait-for graph
+4. RESOLVE         youngest claim yields, and who yielded is recorded
+5. NO FALSE ALARM  a queue behind one holder is not a deadlock
+ALL DEADLOCK CHECKS PASSED
 ```
 
 In the UI, **⚡ Race R1 + R2 for dock-3** launches two agents at one dock simultaneously.
 One wins; the other reads the winner's row and re-routes.
 
 ---
+
+## Load: measured, not claimed
+
+```bash
+uv run python scripts/verify_load.py 50 20     # 50 robots, 8 contended resources, 20s
+```
+
+```
+claim attempts      : 1029
+granted / denied    : 229 / 800
+errors              : 0
+THROUGHPUT          : 45 claim operations/sec
+latency p50 / p95   : 772 ms / 1887 ms
+invariant violations: 0
+VERDICT: PASS — sustained contention, zero double-holds, zero errors
+```
+
+The invariant is asserted *continuously while the load runs*, not just at the end. A
+throughput number without it would be meaningless: fast and wrong is worse than slow and
+right, because a fleet that is fast and wrong collides.
+
+This test earned its keep. The first run produced **202 escaped serialization failures**,
+and the cause was the fencing implementation itself — `SELECT MAX(epoch)+1` made every
+concurrent claimant read the same rows, so the lock mechanism became the main source of
+contention. Moving the token to a non-transactional sequence and adding jittered backoff
+took errors to zero and throughput from 18 to 45 ops/sec.
 
 ## Resilience: measured, not claimed
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+import random
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -29,8 +30,15 @@ from .errors import MemoryBackendError
 log = logging.getLogger("fleetmem.db")
 
 RETRYABLE = {"40001", "40P01"}      # serialization failure, deadlock detected
-MAX_ATTEMPTS = 5
-BASE_BACKOFF = 0.05
+# Retry budget. Load testing at 50 concurrent robots over 8 contended resources showed 5
+# attempts with a fixed 50ms backoff was far too thin: ~200 serialization failures escaped
+# in 20 seconds. CockroachDB expects clients to retry these, and under real contention the
+# tail is long, so the budget is larger and the backoff is exponential WITH JITTER —
+# without jitter, retries from many robots re-collide in lockstep and the contention
+# reproduces itself on every round.
+MAX_ATTEMPTS = 12
+BASE_BACKOFF = 0.02
+MAX_BACKOFF = 1.5
 
 
 class Database:
@@ -99,12 +107,20 @@ class Database:
             except psycopg.Error as exc:
                 code = getattr(exc, "sqlstate", None)
                 if code in RETRYABLE and attempt < max_attempts:
-                    delay = BASE_BACKOFF * (2 ** (attempt - 1))
-                    log.warning("SQLSTATE %s, retrying in %.0fms (attempt %d/%d)",
-                                code, delay * 1000, attempt, max_attempts)
+                    delay = min(BASE_BACKOFF * (2 ** (attempt - 1)), MAX_BACKOFF)
+                    delay *= 0.5 + random.random()      # full-ish jitter, so retries spread
+                    log.debug("SQLSTATE %s, retrying in %.0fms (attempt %d/%d)",
+                              code, delay * 1000, attempt, max_attempts)
                     time.sleep(delay)
                     last = exc
                     continue
+                if code in RETRYABLE:
+                    # Exhausted the budget. This is contention, not corruption — say so
+                    # precisely, because "serialization failure" and "the database is
+                    # broken" call for completely different responses from the caller.
+                    raise MemoryBackendError(
+                        f"gave up after {max_attempts} attempts under contention "
+                        f"(SQLSTATE {code}); consider backing off at the caller") from exc
                 raise
         raise MemoryBackendError(f"transaction failed after {max_attempts} attempts: {last}")
 

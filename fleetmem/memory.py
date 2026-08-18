@@ -103,14 +103,10 @@ class FleetMemory:
                      AND expires_at <= now()""",
                 (self.fleet_id, resource_id),
             )
-            # Next fencing token for this resource. Monotonic because the read and the
-            # insert happen inside one serializable transaction: a concurrent claimant
-            # either sees this row or conflicts and retries, never reuses the number.
-            cur.execute(
-                """SELECT COALESCE(MAX(epoch), 0) + 1 AS next FROM resource_claims
-                   WHERE fleet_id = %s AND resource_id = %s""",
-                (self.fleet_id, resource_id),
-            )
+            # Fencing token from a sequence: monotonic, and it does not read contended
+            # rows. The earlier MAX(epoch)+1 form was correct but made every claimant
+            # conflict on the same rows, which is the opposite of what a lock should do.
+            cur.execute("SELECT nextval('fleetmem_epoch') AS next")
             next_epoch = cur.fetchone()["next"]
             try:
                 cur.execute(
@@ -204,11 +200,101 @@ class FleetMemory:
             (self.fleet_id,),
         )
 
+    # ------------------------------------------------------------- deadlock
+
+    def wait_for(self, resource_id: str, robot_id: str) -> None:
+        """Record that a robot is blocked on a resource it does not hold."""
+        self.db.execute(
+            """INSERT INTO resource_waits (fleet_id, robot_id, resource_id)
+               VALUES (%s, %s, %s)""",
+            (self.fleet_id, robot_id, resource_id),
+        )
+
+    def stop_waiting(self, resource_id: str, robot_id: str) -> None:
+        self.db.execute(
+            """UPDATE resource_waits SET resolved_at = now()
+               WHERE fleet_id = %s AND robot_id = %s AND resource_id = %s
+                 AND resolved_at IS NULL""",
+            (self.fleet_id, robot_id, resource_id),
+        )
+
+    def wait_for_graph(self) -> dict[str, set[str]]:
+        """Build the wait-for graph: robot -> robots it is (transitively) blocked behind."""
+        waits = self.db.query(
+            """SELECT robot_id, resource_id FROM resource_waits
+               WHERE fleet_id = %s AND resolved_at IS NULL""",
+            (self.fleet_id,),
+        )
+        holders = {c["resource_id"]: c["robot_id"] for c in self.live_claims()}
+        graph: dict[str, set[str]] = {}
+        for w in waits:
+            holder = holders.get(w["resource_id"])
+            if holder and holder != w["robot_id"]:
+                graph.setdefault(w["robot_id"], set()).add(holder)
+        return graph
+
+    def detect_deadlocks(self) -> list[list[str]]:
+        """Find cycles in the wait-for graph.
+
+        A genuinely different failure class from the one the unique index prevents. That
+        constraint stops two robots holding ONE resource; it does nothing about A holding
+        what B needs while B holds what A needs. Industry fleet managers sequence movements
+        at intersections precisely to avoid this, and it is invisible unless the waits are
+        recorded.
+        """
+        graph = self.wait_for_graph()
+        cycles: list[list[str]] = []
+        seen_cycles: set[frozenset] = set()
+
+        def walk(node: str, path: list[str], visiting: set[str]) -> None:
+            for nxt in graph.get(node, ()):  # neighbours = robots we are blocked behind
+                if nxt in visiting:
+                    cycle = path[path.index(nxt):] if nxt in path else [nxt]
+                    key = frozenset(cycle)
+                    if len(cycle) > 1 and key not in seen_cycles:
+                        seen_cycles.add(key)
+                        cycles.append(cycle)
+                    continue
+                walk(nxt, path + [nxt], visiting | {nxt})
+
+        for robot in list(graph):
+            walk(robot, [robot], {robot})
+        if cycles:
+            self.record_event(None, "deadlock_detected", {"cycles": cycles})
+            log.warning("deadlock detected: %s", cycles)
+        return cycles
+
+    def break_deadlock(self, cycle: list[str]) -> str | None:
+        """Resolve a cycle by making the youngest claim yield.
+
+        Choosing the youngest claim is the conventional victim policy: it has done the least
+        work, so rolling it back wastes the least. Returning WHICH robot yielded matters —
+        an unexplained release is indistinguishable from a bug.
+        """
+        if not cycle:
+            return None
+        rows = self.db.query(
+            """SELECT robot_id, resource_id FROM resource_claims
+               WHERE fleet_id = %s AND robot_id = ANY(%s) AND released_at IS NULL
+               ORDER BY claimed_at DESC LIMIT 1""",
+            (self.fleet_id, list(cycle)),
+        )
+        if not rows:
+            return None
+        victim = rows[0]
+        self.release(victim["resource_id"], victim["robot_id"])
+        self.stop_waiting(victim["resource_id"], victim["robot_id"])
+        self.record_event(victim["robot_id"], "deadlock_broken",
+                          {"released": victim["resource_id"], "cycle": cycle})
+        return victim["robot_id"]
+
     # ------------------------------------------------------- semantic memory
 
     def remember(self, robot_id: str, lesson: str, *, kind: str = "incident",
                  location: str | None = None, confidence: float = 1.0,
-                 report: dict | None = None) -> dict:
+                 report: dict | None = None, observed_at=None,
+                 valid_for_seconds: int | None = None,
+                 recurrence: str | None = None) -> dict:
         """Write a lesson AND its embedding in ONE transaction.
 
         This is the property a separate vector store cannot offer: there is no window in
@@ -236,12 +322,17 @@ class FleetMemory:
                 """
                 INSERT INTO fleet_memory
                     (fleet_id, robot_id, kind, lesson, location, embedding, provider,
-                     confidence, artifact_uri)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                RETURNING id, created_at
+                     confidence, artifact_uri, observed_at, valid_until, recurrence)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        COALESCE(%s::TIMESTAMPTZ, now()),
+                        CASE WHEN %s::INT IS NULL THEN NULL
+                             ELSE now() + (%s::INT * INTERVAL '1 second') END,
+                        %s::STRING)
+                RETURNING id, observed_at, created_at, valid_until
                 """,
                 (self.fleet_id, robot_id, kind, lesson, location,
-                 to_pgvector(vector), provider, confidence, artifact_uri),
+                 to_pgvector(vector), provider, confidence, artifact_uri,
+                 observed_at, valid_for_seconds, valid_for_seconds, recurrence),
             )
             return cur.fetchone()
 
@@ -252,27 +343,121 @@ class FleetMemory:
         log.info("remembered [%s] %s", robot_id, lesson)
         return row
 
-    def recall(self, query: str, limit: int = 5, max_distance: float | None = None) -> list[dict]:
-        """Semantic recall across the WHOLE fleet.
+    def recall(self, query: str, limit: int = 5, max_distance: float | None = None,
+               as_of=None, include_retired: bool = False, rerank: bool = True) -> list[dict]:
+        """Semantic recall across the WHOLE fleet, with lifecycle and time travel.
 
         The fleet_id prefix is the first column of the vector index, so isolation is
-        enforced by the index itself rather than by a filter a future refactor could drop.
+        enforced by the index itself rather than by a filter a refactor could drop.
+
+        Three things distinguish this from a plain similarity search:
+
+        * **Retired lessons are excluded.** A lesson that has been superseded, or whose
+          validity window has closed, is no longer authoritative. It is not deleted —
+          staleness is the most commonly cited failure of production agent memory, and
+          deleting the evidence would also destroy the audit trail.
+        * **Time travel.** `as_of` answers "what did the fleet believe at time T" using
+          ingestion time and supersession time, which is the question incident
+          reconstruction actually asks.
+        * **Reranking.** Cosine distance alone ignores that a corroborated lesson observed
+          this morning beats a low-confidence one from six months ago. Similarity gets you
+          candidates; it does not get you the right answer.
         """
         vector, _ = embed(query)
+        vec = to_pgvector(vector)
+        params: list[Any] = [vec, self.fleet_id]
+
+        if as_of is not None:
+            # Believed at T: ingested by then, and not yet superseded as of then.
+            lifecycle = ("AND created_at <= %s "
+                         "AND (superseded_at IS NULL OR superseded_at > %s) "
+                         "AND (valid_until IS NULL OR valid_until > %s)")
+            params += [as_of, as_of, as_of]
+        elif include_retired:
+            lifecycle = ""
+        else:
+            lifecycle = ("AND superseded_at IS NULL "
+                         "AND (valid_until IS NULL OR valid_until > now())")
+
+        params += [vec, limit * 3 if rerank else limit]
         rows = self.db.query(
-            """
-            SELECT id, robot_id, kind, lesson, location, provider, artifact_uri, created_at,
-                   embedding <=> %s AS distance
+            f"""
+            SELECT id, robot_id, kind, lesson, location, provider, artifact_uri,
+                   confidence, recurrence, observed_at, created_at, valid_until,
+                   superseded_at, embedding <=> %s AS distance
             FROM fleet_memory
-            WHERE fleet_id = %s
+            WHERE fleet_id = %s {lifecycle}
             ORDER BY embedding <=> %s
             LIMIT %s
             """,
-            (to_pgvector(vector), self.fleet_id, to_pgvector(vector), limit),
+            params,
         )
         if max_distance is not None:
-            rows = [r for r in rows if r["distance"] is not None and r["distance"] <= max_distance]
-        return rows
+            rows = [r for r in rows if r["distance"] is not None
+                    and r["distance"] <= max_distance]
+        if rerank:
+            rows = self._rerank(rows)
+        return rows[:limit]
+
+    # Reranking weights. Deliberately small relative to distance: similarity still decides
+    # which lessons are candidates, and these only reorder within that set.
+    W_CONFIDENCE = 0.06
+    W_RECENCY = 0.05
+    RECENCY_HALFLIFE_DAYS = 30.0
+
+    def _rerank(self, rows: list[dict]) -> list[dict]:
+        """Order by relevance, not similarity alone.
+
+        score = distance - confidence_bonus - recency_bonus   (lower is better)
+
+        A recurring condition ('the floor is wet on rainy mornings') does not decay: it
+        describes a pattern rather than an event, so recency is not evidence against it.
+        """
+        import math
+        from datetime import datetime, timezone
+
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            score = float(row["distance"]) if row["distance"] is not None else 1.0
+            score -= self.W_CONFIDENCE * float(row.get("confidence") or 1.0)
+            if not row.get("recurrence"):
+                observed = row.get("observed_at") or row.get("created_at")
+                if observed is not None:
+                    age_days = max(0.0, (now - observed).total_seconds() / 86400.0)
+                    freshness = math.exp(-age_days / self.RECENCY_HALFLIFE_DAYS)
+                    score -= self.W_RECENCY * freshness
+            row["score"] = round(score, 6)
+        return sorted(rows, key=lambda r: r["score"])
+
+    def supersede(self, old_id: str, robot_id: str, lesson: str, **kwargs) -> dict:
+        """Replace a lesson with a corrected one, atomically.
+
+        The old row is retired rather than deleted: an audit trail that loses what was
+        previously believed cannot reconstruct why an agent acted as it did.
+        """
+        new = self.remember(robot_id, lesson, **kwargs)
+        self.db.execute(
+            """UPDATE fleet_memory SET superseded_by = %s, superseded_at = now()
+               WHERE id = %s AND fleet_id = %s""",
+            (new["id"], old_id, self.fleet_id),
+        )
+        self.record_event(robot_id, "memory_superseded",
+                          {"old_id": str(old_id), "new_id": str(new["id"]),
+                           "lesson": lesson})
+        return new
+
+    def retire(self, memory_id: str, robot_id: str, reason: str = "") -> bool:
+        """Retire a lesson without a replacement (e.g. the bay was reconfigured)."""
+        rows = self.db.query(
+            """UPDATE fleet_memory SET superseded_at = now()
+               WHERE id = %s AND fleet_id = %s AND superseded_at IS NULL
+               RETURNING id""",
+            (memory_id, self.fleet_id),
+        )
+        if rows:
+            self.record_event(robot_id, "memory_retired",
+                              {"id": str(memory_id), "reason": reason})
+        return bool(rows)
 
     # ----------------------------------------------------------- checkpoints
 
