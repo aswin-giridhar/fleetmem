@@ -71,7 +71,13 @@ class Database:
         except MemoryBackendError:
             raise
         except psycopg.OperationalError as exc:
-            # A dead pooled connection is an outage, never "no data".
+            # CAREFUL: in psycopg3 SerializationFailure subclasses OperationalError, so a
+            # naive catch here swallows CockroachDB's retryable 40001/40P01 errors and
+            # reports them as an outage — disabling the retry logic in run_in_txn entirely.
+            # Retryable conflicts must propagate unchanged; only genuine connection loss
+            # becomes MemoryBackendError.
+            if getattr(exc, "sqlstate", None) in RETRYABLE:
+                raise
             raise MemoryBackendError(f"lost connection to CockroachDB: {exc}") from exc
 
     def run_in_txn(self, fn, *, max_attempts: int = MAX_ATTEMPTS) -> Any:
