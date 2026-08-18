@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>FleetMem 3D — agentic memory for robot fleets</title>
+<style>
+  :root{
+    --bg:#070a0f; --panel:rgba(16,22,31,.86); --line:#1e2735; --ink:#e6edf6; --dim:#8296ad;
+    --accent:#39d4a0; --warn:#ffb454; --bad:#ff6b6b; --claim:#5aa9ff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);
+       font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  #scene{position:fixed;inset:0}
+  .hud{position:fixed;background:var(--panel);border:1px solid var(--line);
+       border-radius:11px;padding:13px 15px;backdrop-filter:blur(14px)}
+  #top{top:14px;left:14px;right:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  #top h1{font-size:16px;margin:0 10px 0 0;letter-spacing:.2px}
+  .tag{font:11px/1 var(--mono);color:var(--dim);border:1px solid var(--line);
+       padding:5px 9px;border-radius:20px;white-space:nowrap}
+  .tag b{color:var(--accent);font-weight:600}
+  #side{top:82px;right:14px;width:352px;max-height:calc(100vh - 170px);overflow:auto}
+  #side h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);
+           margin:16px 0 8px}
+  #side h2:first-child{margin-top:0}
+  table{width:100%;border-collapse:collapse;font:12px/1.45 var(--mono)}
+  td,th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
+  th{color:var(--dim);font-weight:500}
+  #bottom{bottom:14px;left:14px;display:flex;gap:9px;flex-wrap:wrap;align-items:center}
+  button{background:#1b2431;color:var(--ink);border:1px solid #2b3648;padding:10px 15px;
+         border-radius:8px;cursor:pointer;font-size:13px;font-weight:500}
+  button:hover{background:#222e3e}
+  button.primary{background:var(--accent);color:#04150f;border-color:var(--accent);font-weight:700}
+  #log{font:11.5px/1.65 var(--mono);max-height:150px;overflow:auto}
+  #log div{padding:2px 0;border-bottom:1px solid #141b26}
+  .k-race{color:var(--warn);font-weight:700}.k-claim{color:var(--claim)}
+  .k-recall{color:var(--accent)}.k-blocked{color:var(--bad)}.k-arrive{color:var(--dim)}
+  .hit{border-bottom:1px solid var(--line);padding:7px 0;font-size:12.5px}
+  .hit .d{color:var(--accent);font:11px var(--mono)}
+  .hit .m{color:var(--dim);font-size:11px}
+  input{background:#0d131b;border:1px solid #2b3648;color:var(--ink);padding:9px 11px;
+        border-radius:7px;width:100%;font-size:13px;margin-bottom:8px}
+  .hintbar{position:fixed;bottom:16px;right:16px;color:var(--dim);font:11px var(--mono);
+           background:var(--panel);border:1px solid var(--line);padding:7px 11px;border-radius:8px}
+  a{color:var(--accent)}
+</style>
+</head>
+<body>
+<canvas id="scene"></canvas>
+
+<div class="hud" id="top">
+  <h1>FleetMem <span style="color:var(--dim);font-weight:400;font-size:12px">3D</span></h1>
+  <span class="tag">memory <b id="t-db">…</b></span>
+  <span class="tag">embeddings <b id="t-emb">…</b></span>
+  <span class="tag">reasoning <b id="t-llm">…</b></span>
+  <span class="tag">tick <b id="t-tick">0</b></span>
+  <span class="tag"><a href="/2d">2D view →</a></span>
+</div>
+
+<div class="hud" id="side">
+  <h2>Live claims (CockroachDB)</h2>
+  <table><thead><tr><th>resource</th><th>held by</th></tr></thead>
+  <tbody id="claims"><tr><td colspan="2" style="color:var(--dim)">none</td></tr></tbody></table>
+
+  <h2>Fleet memory — semantic recall</h2>
+  <input id="q" value="pallet slips at bay 12" onkeydown="if(event.key==='Enter')recall()"/>
+  <button onclick="recall()" style="width:100%">Recall across fleet</button>
+  <div id="hits" style="margin-top:9px"></div>
+
+  <h2>Event stream</h2>
+  <div id="log"></div>
+</div>
+
+<div class="hud" id="bottom">
+  <button class="primary" onclick="race()">⚡ Race R1 + R2 for dock-3</button>
+  <button onclick="task('R3')">Task R3</button>
+  <button onclick="task('R5')">Task R5</button>
+  <button onclick="reset()">Release all</button>
+</div>
+<div class="hintbar">drag to orbit · scroll to zoom</div>
+
+<script type="module">
+import * as THREE from './vendor/three.module.js';
+
+const W = 100, H = 60;                      // simulation units
+const canvas = document.getElementById('scene');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x070a0f);
+scene.fog = new THREE.Fog(0x070a0f, 120, 300);
+
+const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 1000);
+
+// --- hand-rolled orbit (avoids shipping another dependency) -----------------
+let camTheta = -2.30, camPhi = 0.78, camDist = 108;
+// shifted left so the right-hand HUD panel does not cover the warehouse floor
+const target = new THREE.Vector3(-14, 2, 0);
+function placeCamera(){
+  camera.position.set(
+    target.x + camDist * Math.sin(camPhi) * Math.cos(camTheta),
+    target.y + camDist * Math.cos(camPhi),
+    target.z + camDist * Math.sin(camPhi) * Math.sin(camTheta));
+  camera.lookAt(target);
+}
+let dragging=false, lastX=0, lastY=0;
+canvas.addEventListener('pointerdown', e=>{dragging=true;lastX=e.clientX;lastY=e.clientY;});
+addEventListener('pointerup', ()=>dragging=false);
+addEventListener('pointermove', e=>{
+  if(!dragging) return;
+  camTheta += (e.clientX-lastX)*0.006;
+  camPhi = Math.max(0.18, Math.min(1.45, camPhi + (e.clientY-lastY)*0.005));
+  lastX=e.clientX; lastY=e.clientY; placeCamera();
+});
+canvas.addEventListener('wheel', e=>{
+  e.preventDefault();
+  camDist = Math.max(55, Math.min(260, camDist + e.deltaY*0.09)); placeCamera();
+}, {passive:false});
+
+// --- lighting ---------------------------------------------------------------
+scene.add(new THREE.AmbientLight(0x7e97b4, 0.85));
+const key = new THREE.DirectionalLight(0xffffff, 1.75);
+key.position.set(60, 95, 40); key.castShadow = true;
+key.shadow.mapSize.set(2048,2048);
+const d = 90;
+Object.assign(key.shadow.camera, {left:-d, right:d, top:d, bottom:-d, near:1, far:260});
+scene.add(key);
+scene.add(new THREE.HemisphereLight(0x6d93cc, 0x121a24, 0.75));
+const rim = new THREE.DirectionalLight(0x5aa9ff, 0.55);
+rim.position.set(-70, 40, -55); scene.add(rim);
+
+// --- floor ------------------------------------------------------------------
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(W+34, H+34),
+  new THREE.MeshStandardMaterial({color:0x151d28, roughness:.92, metalness:.08}));
+floor.rotation.x = -Math.PI/2; floor.receiveShadow = true;
+scene.add(floor);
+const grid = new THREE.GridHelper(Math.max(W,H)+34, 26, 0x1d2836, 0x151d28);
+grid.position.y = 0.02; scene.add(grid);
+
+// world coords: sim (x,y) -> three (x, 0, z), centred
+const wx = x => x - W/2, wz = y => y - H/2;
+
+// --- text labels as sprites -------------------------------------------------
+function labelSprite(text, color='#e6edf6', size=52){
+  const c = document.createElement('canvas'); c.width=512; c.height=128;
+  const g = c.getContext('2d');
+  g.font = `700 ${size}px ui-monospace,monospace`;
+  g.textAlign='center'; g.textBaseline='middle';
+  g.fillStyle=color; g.fillText(text, 256, 64);
+  const tex = new THREE.CanvasTexture(c); tex.anisotropy = 4;
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthTest:false}));
+  spr.scale.set(17, 4.3, 1);
+  return spr;
+}
+
+// --- docks ------------------------------------------------------------------
+const dockMeshes = {}, dockBeams = {}, dockLabels = {};
+function buildDock(id, x, y){
+  const group = new THREE.Group();
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(14, 3.6, 10),
+    new THREE.MeshStandardMaterial({color:0x1b2534, roughness:.6, metalness:.35}));
+  body.position.y = 1.6; body.castShadow = true; body.receiveShadow = true;
+  group.add(body);
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(7.4, .28, 8, 48),
+    new THREE.MeshBasicMaterial({color:0x2b3648}));
+  ring.rotation.x = -Math.PI/2; ring.position.y = .12; group.add(ring);
+  // vertical claim beam — lit only while a robot holds the resource
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.15, 1.15, 34, 16, 1, true),
+    new THREE.MeshBasicMaterial({color:0x5aa9ff, transparent:true, opacity:0, side:THREE.DoubleSide}));
+  beam.position.y = 17; group.add(beam);
+  const lbl = labelSprite(id, '#8296ad', 44); lbl.position.set(0, 7.5, 0); group.add(lbl);
+  group.position.set(wx(x), 0, wz(y));
+  scene.add(group);
+  dockMeshes[id]=body; dockBeams[id]=beam; dockLabels[id]=lbl;
+}
+
+// --- robots -----------------------------------------------------------------
+const robotGroups = {}, robotTrails = {};
+const COLORS = {idle:0x8296ad, moving:0x39d4a0, arrived:0x39d4a0,
+                blocked:0xff6b6b, rerouting:0xffb454};
+function buildRobot(id){
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(
+    new THREE.CylinderGeometry(3.4, 3.7, 2.0, 22),
+    new THREE.MeshStandardMaterial({color:0x2a3546, roughness:.55, metalness:.5}));
+  base.position.y = .85; base.castShadow = true; g.add(base);
+  const shell = new THREE.Mesh(
+    new THREE.BoxGeometry(5.2, 3.0, 5.2),
+    new THREE.MeshStandardMaterial({color:0x39d4a0, roughness:.3, metalness:.3,
+                                    emissive:0x39d4a0, emissiveIntensity:.35}));
+  shell.position.y = 3.4; shell.castShadow = true; g.add(shell);
+  const beacon = new THREE.Mesh(
+    new THREE.SphereGeometry(.72, 14, 14),
+    new THREE.MeshBasicMaterial({color:0x39d4a0}));
+  beacon.position.y = 5.5; g.add(beacon);
+  const lbl = labelSprite(id, '#ffffff', 50); lbl.position.set(0, 7.4, 0);
+  lbl.scale.set(11,2.8,1); g.add(lbl);
+  scene.add(g);
+  robotGroups[id] = {g, shell, beacon};
+  const trailGeo = new THREE.BufferGeometry();
+  trailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(20*3), 3));
+  const trail = new THREE.Line(trailGeo,
+    new THREE.LineBasicMaterial({color:0x39d4a0, transparent:true, opacity:.4}));
+  scene.add(trail); robotTrails[id] = trail;
+}
+
+// --- state ------------------------------------------------------------------
+let S = null, built = false;
+function applyState(s){
+  S = s;
+  if(!built){
+    s.docks.forEach(d => buildDock(d.id, d.x, d.y));
+    s.robots.forEach(r => buildRobot(r.id));
+    built = true; placeCamera();
+  }
+  for(const d of s.docks){
+    const held = !!d.holder;
+    dockMeshes[d.id].material.color.setHex(held ? 0x2f5a86 : 0x1f2a3a);
+    dockBeams[d.id].material.opacity = held ? 0.34 : 0.0;
+    dockBeams[d.id].material.color.setHex(held ? 0x5aa9ff : 0x5aa9ff);
+    dockLabels[d.id].material.map.image && null;
+  }
+  for(const r of s.robots){
+    const rg = robotGroups[r.id]; if(!rg) continue;
+    const tx = wx(r.x), tz = wz(r.y);
+    rg.g.position.lerp(new THREE.Vector3(tx, 0, tz), 0.35);
+    const col = COLORS[r.status] ?? 0x8296ad;
+    rg.shell.material.color.setHex(col);
+    rg.shell.material.emissive.setHex(col);
+    rg.beacon.material.color.setHex(col);
+    // trail
+    const pts = (r.trail||[]).slice(-20);
+    const arr = robotTrails[r.id].geometry.attributes.position.array;
+    for(let i=0;i<20;i++){
+      const p = pts[i] ?? pts[pts.length-1] ?? [r.x, r.y];
+      arr[i*3]=wx(p[0]); arr[i*3+1]=1.2; arr[i*3+2]=wz(p[1]);
+    }
+    robotTrails[r.id].geometry.attributes.position.needsUpdate = true;
+  }
+  document.getElementById('t-tick').textContent = s.tick;
+  renderClaims(); renderLog();
+}
+
+function renderClaims(){
+  const rows = Object.entries(S.claims||{});
+  document.getElementById('claims').innerHTML = rows.length
+    ? rows.map(([r,who])=>`<tr><td>${r}</td><td style="color:var(--claim)">${who}</td></tr>`).join('')
+    : '<tr><td colspan="2" style="color:var(--dim)">none</td></tr>';
+}
+function renderLog(){
+  document.getElementById('log').innerHTML = (S.log||[]).slice().reverse()
+    .map(l=>`<div class="k-${l.kind}">[${String(l.t).padStart(4,'0')}] ${l.text}</div>`).join('');
+}
+
+// --- render loop ------------------------------------------------------------
+function resize(){
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w/h; camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize); resize(); placeCamera();
+
+let t = 0;
+function animate(){
+  requestAnimationFrame(animate);
+  t += 0.016;
+  // gentle pulse on live claim beams
+  for(const id in dockBeams){
+    const b = dockBeams[id];
+    if(b.material.opacity > 0.01)
+      b.material.opacity = 0.22 + 0.13*Math.sin(t*3.1);
+  }
+  for(const id in robotGroups) robotGroups[id].g.rotation.y = Math.sin(t*0.6)*0.09;
+  renderer.render(scene, camera);
+}
+animate();
+
+// --- data -------------------------------------------------------------------
+const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+ws.onmessage = e => applyState(JSON.parse(e.data));
+
+window.race = async () => { await fetch('/api/race',{method:'POST',
+  headers:{'content-type':'application/json'},
+  body:JSON.stringify({resource:'dock-3',robots:['R1','R2']})}); };
+window.task = async id => { await fetch('/api/task',{method:'POST',
+  headers:{'content-type':'application/json'},
+  body:JSON.stringify({robot_id:id,task:'deliver pallet'})}); };
+window.reset = async () => { await fetch('/api/reset',{method:'POST'}); };
+window.recall = async () => {
+  const q = document.getElementById('q').value;
+  const r = await (await fetch('/api/recall?q='+encodeURIComponent(q))).json();
+  document.getElementById('hits').innerHTML = r.hits.length ? r.hits.map(h=>
+    `<div class="hit"><div class="d">distance ${h.distance} · ${h.robot_id}</div>
+     <div>${h.lesson}</div><div class="m">${h.location||'—'} · ${h.provider}</div></div>`).join('')
+    : '<div style="color:var(--dim)">no memories</div>';
+};
+
+(async function boot(){
+  const h = await (await fetch('/healthz')).json();
+  document.getElementById('t-db').textContent  = h.config?.target ?? '?';
+  document.getElementById('t-emb').textContent = h.embeddings_provider ?? '?';
+  document.getElementById('t-llm').textContent = h.reasoning_provider ?? '?';
+  recall();
+})();
+</script>
+</body>
+</html>

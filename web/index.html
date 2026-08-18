@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>FleetMem — agentic memory for robot fleets</title>
+<style>
+  :root{
+    --bg:#0b0f14; --panel:#121821; --line:#1e2735; --ink:#e6edf6; --dim:#8296ad;
+    --accent:#39d4a0; --warn:#ffb454; --bad:#ff6b6b; --claim:#5aa9ff;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;
+         align-items:baseline;gap:16px;flex-wrap:wrap}
+  h1{font-size:17px;margin:0;letter-spacing:.2px}
+  .tag{font:11px/1 var(--mono);color:var(--dim);border:1px solid var(--line);
+       padding:4px 8px;border-radius:20px}
+  .tag b{color:var(--accent);font-weight:600}
+  main{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.85fr);
+       gap:16px;padding:16px;align-items:start}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+  .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;
+            color:var(--dim);margin:0 0 10px}
+  canvas{width:100%;height:auto;display:block;background:#080b10;
+         border:1px solid var(--line);border-radius:8px}
+  .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  button{background:#1b2431;color:var(--ink);border:1px solid #2b3648;padding:9px 14px;
+         border-radius:7px;cursor:pointer;font-size:13px;font-weight:500}
+  button:hover{background:#222e3e;border-color:#3a4759}
+  button.primary{background:var(--accent);color:#04150f;border-color:var(--accent);font-weight:700}
+  button.primary:hover{filter:brightness(1.08)}
+  input{background:#0d131b;border:1px solid #2b3648;color:var(--ink);padding:9px 11px;
+        border-radius:7px;width:100%;font-size:13px}
+  table{width:100%;border-collapse:collapse;font:12px/1.45 var(--mono)}
+  td,th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
+  th{color:var(--dim);font-weight:500}
+  .sql{font:11.5px/1.6 var(--mono);background:#080b10;border:1px solid var(--line);
+       border-radius:7px;padding:10px;color:#9fb4cc;white-space:pre-wrap;overflow-x:auto}
+  .sql .k{color:#7aa2f7}.sql .s{color:var(--accent)}.sql .c{color:#5a6b80}
+  #log{font:11.5px/1.7 var(--mono);max-height:210px;overflow:auto}
+  #log div{padding:2px 0;border-bottom:1px solid #141b26}
+  .k-claim{color:var(--claim)}.k-race{color:var(--warn);font-weight:700}
+  .k-recall{color:var(--accent)}.k-blocked{color:var(--bad)}.k-arrive{color:var(--dim)}
+  .hit{border-bottom:1px solid var(--line);padding:7px 0}
+  .hit .d{color:var(--accent);font:11px var(--mono)}
+  .hit .m{color:var(--dim);font-size:11px}
+  .stat{display:flex;justify-content:space-between;font:12px var(--mono);
+        padding:3px 0;color:var(--dim)}
+  .stat b{color:var(--ink);font-weight:600}
+  .row{display:flex;gap:8px;margin-top:8px}
+  .note{color:var(--dim);font-size:11.5px;margin-top:8px;line-height:1.5}
+</style>
+</head>
+<body>
+<header>
+  <h1>FleetMem</h1>
+  <span class="tag">memory layer <b id="t-db">…</b></span>
+  <span class="tag">embeddings <b id="t-emb">…</b></span>
+  <span class="tag">reasoning <b id="t-llm">…</b></span>
+  <span class="tag">tick <b id="t-tick">0</b></span>
+</header>
+
+<main>
+  <div>
+    <div class="panel">
+      <h2>Warehouse — 6 robots, 5 shared resources</h2>
+      <canvas id="cv" width="1000" height="600"></canvas>
+      <div class="controls">
+        <button class="primary" onclick="race()">⚡ Race R1 + R2 for dock-3</button>
+        <button onclick="task('R3')">Assign R3 a task</button>
+        <button onclick="task('R5')">Assign R5 a task</button>
+        <button onclick="reset()">Release all claims</button>
+      </div>
+      <div class="note">The race launches two agents at the same dock <b>simultaneously</b>.
+        CockroachDB decides the winner; the loser reads the winner's row and re-routes.</div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>What the database is doing</h2>
+      <div class="sql"><span class="c">-- at most one live claim per resource, enforced by the DB</span>
+<span class="k">CREATE UNIQUE INDEX</span> one_holder_per_resource
+  <span class="k">ON</span> resource_claims (fleet_id, resource_id) <span class="k">WHERE</span> released_at <span class="k">IS NULL</span>;
+
+<span class="c">-- fleet-wide semantic recall; fleet_id is the index PREFIX, not a filter</span>
+<span class="k">SELECT</span> lesson, embedding <span class="s">&lt;=&gt;</span> $1 <span class="k">AS</span> distance
+  <span class="k">FROM</span> fleet_memory <span class="k">WHERE</span> fleet_id = $2
+  <span class="k">ORDER BY</span> embedding <span class="s">&lt;=&gt;</span> $1 <span class="k">LIMIT</span> 5;</div>
+    </div>
+  </div>
+
+  <div>
+    <div class="panel">
+      <h2>Live claims (CockroachDB)</h2>
+      <table><thead><tr><th>resource</th><th>held by</th><th>since</th></tr></thead>
+      <tbody id="claims"><tr><td colspan="3" style="color:var(--dim)">none</td></tr></tbody></table>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Fleet memory — semantic recall</h2>
+      <input id="q" placeholder="e.g. pallet slips at bay 12" value="pallet slips at bay 12"
+             onkeydown="if(event.key==='Enter')recall()"/>
+      <div class="row"><button onclick="recall()">Recall</button>
+        <button onclick="teach()">Teach a lesson</button></div>
+      <div id="hits" style="margin-top:10px"></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Event stream</h2>
+      <div id="log"></div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h2>Memory stats</h2>
+      <div class="stat"><span>lessons stored</span><b id="s-mem">–</b></div>
+      <div class="stat"><span>live claims</span><b id="s-claims">–</b></div>
+      <div class="stat"><span>agent decisions</span><b id="s-dec">–</b></div>
+    </div>
+  </div>
+</main>
+
+<script>
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+let S = null;
+
+function draw(){
+  if(!S) return;
+  const W = cv.width, H = cv.height, sx = W/S.width, sy = H/S.height;
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = '#080b10'; ctx.fillRect(0,0,W,H);
+
+  ctx.strokeStyle = '#111a24'; ctx.lineWidth = 1;
+  for(let x=0;x<W;x+=50){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=50){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+
+  for(const d of S.docks){
+    const x = d.x*sx, y = d.y*sy, held = !!d.holder;
+    ctx.fillStyle = held ? 'rgba(90,169,255,.16)' : 'rgba(130,150,173,.08)';
+    ctx.strokeStyle = held ? '#5aa9ff' : '#2b3648';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.roundRect(x-42, y-24, 84, 48, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = held ? '#5aa9ff' : '#8296ad';
+    ctx.font = '600 13px ui-monospace,monospace'; ctx.textAlign = 'center';
+    ctx.fillText(d.id, x, y-2);
+    if(held){ ctx.fillStyle='#e6edf6'; ctx.font='11px ui-monospace,monospace';
+              ctx.fillText('held by '+d.holder, x, y+15); }
+  }
+
+  for(const r of S.robots){
+    if(r.trail && r.trail.length>1){
+      ctx.strokeStyle='rgba(57,212,160,.22)'; ctx.lineWidth=2; ctx.beginPath();
+      r.trail.forEach((p,i)=> i? ctx.lineTo(p[0]*sx,p[1]*sy) : ctx.moveTo(p[0]*sx,p[1]*sy));
+      ctx.stroke();
+    }
+    const x=r.x*sx, y=r.y*sy;
+    const col = r.status==='blocked' ? '#ff6b6b'
+              : r.status==='rerouting' ? '#ffb454'
+              : r.holding ? '#39d4a0' : '#8296ad';
+    ctx.beginPath(); ctx.arc(x,y,13,0,7); ctx.fillStyle=col; ctx.fill();
+    ctx.fillStyle='#04150f'; ctx.font='700 11px ui-monospace,monospace';
+    ctx.textAlign='center'; ctx.fillText(r.id,x,y+4);
+    if(r.note){ ctx.fillStyle='#8296ad'; ctx.font='10.5px ui-sans-serif';
+                ctx.fillText(r.note.slice(0,46), x, y+30); }
+  }
+}
+
+function renderLog(){
+  const el=document.getElementById('log');
+  el.innerHTML = (S.log||[]).slice().reverse()
+    .map(l=>`<div class="k-${l.kind}">[${String(l.t).padStart(4,'0')}] ${l.text}</div>`).join('');
+}
+function renderClaims(){
+  const rows=Object.entries(S.claims||{});
+  document.getElementById('claims').innerHTML = rows.length
+    ? rows.map(([r,who])=>`<tr><td>${r}</td><td style="color:var(--claim)">${who}</td><td>live</td></tr>`).join('')
+    : '<tr><td colspan="3" style="color:var(--dim)">none</td></tr>';
+  document.getElementById('s-claims').textContent = rows.length;
+}
+
+const ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
+ws.onmessage = e => { S = JSON.parse(e.data);
+  document.getElementById('t-tick').textContent = S.tick;
+  draw(); renderLog(); renderClaims(); };
+
+async function race(){ await fetch('/api/race',{method:'POST',
+  headers:{'content-type':'application/json'},
+  body:JSON.stringify({resource:'dock-3',robots:['R1','R2']})}); }
+async function task(id){ await fetch('/api/task',{method:'POST',
+  headers:{'content-type':'application/json'},
+  body:JSON.stringify({robot_id:id,task:'deliver pallet'})}); }
+async function reset(){ await fetch('/api/reset',{method:'POST'}); }
+
+async function recall(){
+  const q=document.getElementById('q').value;
+  const r=await (await fetch('/api/recall?q='+encodeURIComponent(q))).json();
+  document.getElementById('hits').innerHTML = r.hits.length ? r.hits.map(h=>
+    `<div class="hit"><div class="d">distance ${h.distance}  ·  ${h.robot_id}</div>
+     <div>${h.lesson}</div><div class="m">${h.location||'—'} · ${h.provider}</div></div>`).join('')
+    : '<div style="color:var(--dim)">no memories</div>';
+}
+async function teach(){
+  const lesson = prompt('What should the fleet remember?');
+  if(!lesson) return;
+  await fetch('/api/remember',{method:'POST',headers:{'content-type':'application/json'},
+    body:JSON.stringify({robot_id:'R1',lesson,location:null})});
+  recall();
+}
+async function boot(){
+  const h = await (await fetch('/healthz')).json();
+  document.getElementById('t-db').textContent  = h.config?.target ?? '?';
+  document.getElementById('t-emb').textContent = h.embeddings_provider ?? '?';
+  document.getElementById('t-llm').textContent = h.reasoning_provider ?? '?';
+  const ev = await (await fetch('/api/events?limit=200')).json();
+  document.getElementById('s-dec').textContent =
+      ev.events.filter(e=>e.kind==='decision').length;
+  const rc = await (await fetch('/api/recall?q=warehouse&limit=50')).json();
+  document.getElementById('s-mem').textContent = rc.hits.length;
+  recall();
+}
+boot();
+</script>
+</body>
+</html>

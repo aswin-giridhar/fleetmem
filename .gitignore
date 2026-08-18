@@ -1,0 +1,18 @@
+# Private working notes — strategy, submission drafts, risk register.
+# Deliberately NOT part of the public submission repo.
+context/
+
+# Secrets. Never commit.
+.env
+certs/
+
+# Scratch / clones / caches
+.tmp/
+.venv/
+.venv-windows/
+.playwright-mcp/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+node_modules/
