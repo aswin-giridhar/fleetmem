@@ -181,10 +181,15 @@ class RobotAgent:
 
 
 def active_reasoner_name() -> str:
-    """Which reasoner would actually be used right now.
+    """Which reasoner is ACTUALLY usable right now.
 
-    Resolved by construction+probe, not by reading a config value. A configured model id
-    says nothing about whether the credentials to call it exist.
+    Deliberately performs a real minimal InvokeModel. Earlier versions checked only that a
+    boto3 client could be constructed and that STS returned an identity — both succeed with
+    credentials that have no Bedrock permission at all, so the UI confidently displayed
+    "bedrock" while every call was failing with AccessDenied. Valid credentials are not
+    model access. The probe must exercise the thing it reports on.
+
+    The result is cached: this costs one tiny inference per process, not one per request.
     """
     global _PROBED
     try:
@@ -192,10 +197,20 @@ def active_reasoner_name() -> str:
     except NameError:
         pass
     try:
-        BedrockReasoner()
-        import boto3
-        boto3.client("sts", region_name=CONFIG.aws_region).get_caller_identity()
-        _PROBED = f"bedrock ({CONFIG.chat_model.split('.')[-1][:28]})"
-    except Exception:
-        _PROBED = "local-policy (no AWS credentials)"
+        reasoner = BedrockReasoner()
+        reasoner._client.invoke_model(
+            modelId=CONFIG.chat_model,
+            body=json.dumps({
+                "anthropic_version": "bedrock-2023-05-31",
+                "max_tokens": 1,
+                "messages": [{"role": "user", "content": "hi"}],
+            }),
+        )
+        _PROBED = f"bedrock ({CONFIG.chat_model.split('.')[-1][:26]})"
+    except Exception as exc:
+        code = getattr(exc, "response", {}).get("Error", {}).get("Code", type(exc).__name__)
+        reason = {"AccessDeniedException": "no Bedrock model access",
+                  "NoCredentialsError": "no AWS credentials",
+                  "ValidationException": "model id not available in region"}.get(code, code)
+        _PROBED = f"local-policy ({reason})"
     return _PROBED

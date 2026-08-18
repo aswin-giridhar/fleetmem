@@ -109,13 +109,25 @@ def race(req: RaceRequest):
     """Two agents, one dock, genuinely concurrent. The core demo."""
     if len(req.robots) < 2:
         raise HTTPException(400, "need at least two robots to race")
+    if not warehouse.fleet_is_valid():
+        log.warning("fleet row vanished (schema reset?) - re-resolving")
+        warehouse.refresh_fleet()
     results = warehouse.race(req.resource, tuple(req.robots[:2]))
+    errors = [r for r in results if r.get("error")]
+    if not results or len(errors) == len(results):
+        # Reporting 200 with an empty list is how a total failure gets rendered as
+        # "nothing happened". Fail loudly instead.
+        raise HTTPException(500, {"message": "race failed to execute",
+                                  "errors": [r["error"] for r in errors]})
     return {"resource": req.resource, "results": results,
-            "holder": warehouse.memory.holder_of(req.resource)}
+            "holder": warehouse.memory.holder_of(req.resource),
+            "errors": [r["error"] for r in errors] or None}
 
 
 @app.post("/api/task")
 def task(req: TaskRequest):
+    if not warehouse.fleet_is_valid():
+        warehouse.refresh_fleet()
     return warehouse.assign(req.robot_id, req.task, req.candidates)
 
 

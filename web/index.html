@@ -52,6 +52,17 @@
   .stat b{color:var(--ink);font-weight:600}
   .row{display:flex;gap:8px;margin-top:8px}
   .note{color:var(--dim);font-size:11.5px;margin-top:8px;line-height:1.5}
+  #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:88px;z-index:99;
+         background:#3a1620;border:1px solid #ff6b6b;color:#ffd9d9;padding:11px 16px;
+         border-radius:9px;font:12.5px/1.5 var(--mono);max-width:min(680px,88vw);
+         display:none;box-shadow:0 8px 28px rgba(0,0,0,.5)}
+  #toast.ok{background:#0f2b22;border-color:var(--accent);color:#c9f5e6}
+  .viewtoggle{display:inline-flex;border:1px solid var(--line);border-radius:20px;
+              overflow:hidden}
+  .viewtoggle a{padding:5px 13px;font:11px/1.5 var(--mono);color:var(--dim);
+                text-decoration:none}
+  .viewtoggle a.on{background:var(--accent);color:#04150f;font-weight:700}
+
 </style>
 </head>
 <body>
@@ -61,6 +72,7 @@
   <span class="tag">embeddings <b id="t-emb">…</b></span>
   <span class="tag">reasoning <b id="t-llm">…</b></span>
   <span class="tag">tick <b id="t-tick">0</b></span>
+  <span class="viewtoggle"><a href="/">3D</a><a href="/2d" class="on">2D</a></span>
 </header>
 
 <main>
@@ -121,7 +133,30 @@
   </div>
 </main>
 
+<div id="toast"></div>
 <script>
+function toast(msg, ok){
+  const el = document.getElementById('toast');
+  el.textContent = msg; el.className = ok ? 'ok' : '';
+  el.style.display = 'block';
+  clearTimeout(el._t); el._t = setTimeout(()=> el.style.display='none', ok ? 3200 : 8000);
+}
+async function call(url, opts, label){
+  try{
+    const r = await fetch(url, opts);
+    const body = await r.json().catch(()=>({}));
+    if(!r.ok){
+      const d = body.detail;
+      toast(`${label} failed (HTTP ${r.status}): ` +
+            (typeof d === 'object' ? (d.message||'') + ' ' + (d.errors||[]).join('; ')
+                                   : (d || 'unknown error')), false);
+      return null;
+    }
+    if(body.errors && body.errors.length) toast(`${label}: ${body.errors.join('; ')}`, false);
+    return body;
+  }catch(e){ toast(`${label} failed: ${e.message}`, false); return null; }
+}
+
 const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
 let S = null;
 
@@ -184,17 +219,24 @@ ws.onmessage = e => { S = JSON.parse(e.data);
   document.getElementById('t-tick').textContent = S.tick;
   draw(); renderLog(); renderClaims(); };
 
-async function race(){ await fetch('/api/race',{method:'POST',
-  headers:{'content-type':'application/json'},
-  body:JSON.stringify({resource:'dock-3',robots:['R1','R2']})}); }
-async function task(id){ await fetch('/api/task',{method:'POST',
-  headers:{'content-type':'application/json'},
-  body:JSON.stringify({robot_id:id,task:'deliver pallet'})}); }
-async function reset(){ await fetch('/api/reset',{method:'POST'}); }
+const J = b => ({method:'POST', headers:{'content-type':'application/json'},
+                 body: JSON.stringify(b)});
+async function race(){
+  const r = await call('/api/race', J({resource:'dock-3',robots:['R1','R2']}), 'Race');
+  if(r){ const w=(r.results||[]).find(x=>x.granted), l=(r.results||[]).find(x=>!x.granted);
+         toast(`${w?w.robot:'?'} won dock-3 · ${l?l.robot:'?'} denied (23505) and re-routed`, true); }
+}
+async function task(id){
+  const r = await call('/api/task', J({robot_id:id, task:'deliver pallet'}), `Task ${id}`);
+  if(r) toast(`${id} -> ${r.granted || 'blocked (all candidates held)'}`, true);
+}
+async function reset(){ if(await call('/api/reset', {method:'POST'}, 'Reset'))
+                          toast('all claims released', true); }
 
 async function recall(){
   const q=document.getElementById('q').value;
-  const r=await (await fetch('/api/recall?q='+encodeURIComponent(q))).json();
+  const r=await call('/api/recall?q='+encodeURIComponent(q), undefined, 'Recall');
+  if(!r) return;
   document.getElementById('hits').innerHTML = r.hits.length ? r.hits.map(h=>
     `<div class="hit"><div class="d">distance ${h.distance}  ·  ${h.robot_id}</div>
      <div>${h.lesson}</div><div class="m">${h.location||'—'} · ${h.provider}</div></div>`).join('')

@@ -52,6 +52,7 @@ class Robot:
 
 class Warehouse:
     def __init__(self, fleet_name: str = "warehouse-1"):
+        self._fleet_name = fleet_name
         self.fleet_id = ensure_fleet(fleet_name)
         self.memory = FleetMemory(self.fleet_id)
         self.robots: dict[str, Robot] = {}
@@ -62,6 +63,22 @@ class Warehouse:
         self._seed()
 
     # ------------------------------------------------------------------ setup
+
+    def refresh_fleet(self) -> None:
+        """Re-resolve the fleet id.
+
+        reset_db.py can drop and recreate `fleets` underneath a running server, leaving this
+        process holding an id that no longer exists — every write then fails with a foreign
+        key violation. Re-resolving is cheap and turns a fatal state into a recoverable one.
+        """
+        from .memory import ensure_fleet
+        self.fleet_id = ensure_fleet(self._fleet_name)
+        self.memory = FleetMemory(self.fleet_id)
+
+    def fleet_is_valid(self) -> bool:
+        rows = self.memory.db.query("SELECT 1 AS ok FROM fleets WHERE id = %s",
+                                    (self.fleet_id,))
+        return bool(rows)
 
     def _seed(self):
         random.seed(7)
@@ -114,9 +131,17 @@ class Warehouse:
         barrier = threading.Barrier(len(robots))
 
         def go(rid):
-            mem = FleetMemory(self.fleet_id)
-            agent = RobotAgent(rid, mem)
-            decision = agent.plan(f"deliver pallet to {resource}", [resource])
+            try:
+                mem = FleetMemory(self.fleet_id)
+                agent = RobotAgent(rid, mem)
+                decision = agent.plan(f"deliver pallet to {resource}", [resource])
+            except Exception as exc:
+                log.exception("race worker %s failed before claiming", rid)
+                barrier.wait()
+                with lock:
+                    results.append({"robot": rid, "granted": False, "holder": None,
+                                    "error": f"{type(exc).__name__}: {exc}"})
+                return
             barrier.wait()                      # genuine simultaneity
             try:
                 mem.claim(resource, rid, purpose="deliver pallet")
@@ -125,6 +150,13 @@ class Warehouse:
             except ResourceHeldError as held:
                 outcome = {"robot": rid, "granted": False, "holder": held.holder,
                            "reason": decision.reason, "memory_used": decision.memory_used}
+            except Exception as exc:
+                # An exception raised in a worker thread does not reach the caller. Without
+                # this branch the race silently returns an empty result list and the API
+                # reports 200 OK for something that entirely failed to run.
+                log.exception("race worker %s failed", rid)
+                outcome = {"robot": rid, "granted": False, "holder": None,
+                           "error": f"{type(exc).__name__}: {exc}"}
             with lock:
                 results.append(outcome)
 
