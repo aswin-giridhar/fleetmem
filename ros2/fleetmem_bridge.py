@@ -50,7 +50,7 @@ from rclpy.qos import qos_profile_sensor_data
 sys.path.insert(0, os.environ.get("FLEETMEM_REPO", "/repo"))
 
 from fleetmem.errors import MemoryBackendError, ResourceHeldError  # noqa: E402
-from fleetmem.memory import FleetMemory, StaleFenceError  # noqa: E402
+from fleetmem.memory import FleetMemory, StaleFenceError, ensure_fleet  # noqa: E402
 
 
 def _redact(dsn: str) -> str:
@@ -79,7 +79,7 @@ class RobotState:
 
 class FleetMemBridge(Node):
     def __init__(self, robots: list[str], dock: str, dock_xy: tuple[float, float],
-                 fleet_id: str, claim_radius: float, release_radius: float,
+                 fleet_name: str, claim_radius: float, release_radius: float,
                  dwell_seconds: float, speed: float, tick_hz: float):
         super().__init__("fleetmem_bridge")
         self.dock = dock
@@ -93,9 +93,19 @@ class FleetMemBridge(Node):
         # The connection pool blocks for ~25s on an unreachable DSN. Inside a timer
         # callback that is indistinguishable from a DDS discovery failure, which is the
         # single most expensive thing to misdiagnose here. So we probe once, up front.
+        # fleets.id is a UUID with foreign keys pointing at it from every other table, so
+        # the human-readable fleet NAME is resolved to its id here rather than being used
+        # directly. ensure_fleet is idempotent.
+        try:
+            fleet_id = ensure_fleet(fleet_name)
+        except MemoryBackendError as exc:
+            print(f"FATAL: CockroachDB unreachable at startup: {exc}", file=sys.stderr)
+            raise SystemExit(2)
+        self.fleet_id = fleet_id
         self.memory = FleetMemory(fleet_id)
         dsn = _redact(self.memory.db.dsn)
-        self.get_logger().info(f"fleet_id={fleet_id} dock={dock} dsn={dsn}")
+        self.get_logger().info(
+            f"fleet='{fleet_name}' fleet_id={fleet_id} dock={dock} dsn={dsn}")
         try:
             holder = self.memory.holder_of(dock)
         except MemoryBackendError as exc:
@@ -271,14 +281,21 @@ def main() -> None:
     ap.add_argument("--dwell", type=float, default=8.0)
     ap.add_argument("--speed", type=float, default=0.6)
     ap.add_argument("--tick-hz", type=float, default=5.0)
+    ap.add_argument("--fleet-id-out", default="",
+                    help="write the resolved fleet UUID here (for verification)")
     args, _ = ap.parse_known_args()
 
     rclpy.init()
     node = FleetMemBridge(
         robots=[r.strip() for r in args.robots.split(",") if r.strip()],
-        dock=args.dock, dock_xy=(args.dock_x, args.dock_y), fleet_id=args.fleet,
+        dock=args.dock, dock_xy=(args.dock_x, args.dock_y), fleet_name=args.fleet,
         claim_radius=args.claim_radius, release_radius=args.release_radius,
         dwell_seconds=args.dwell, speed=args.speed, tick_hz=args.tick_hz)
+    # Publish the resolved UUID so the verification script can query exactly this run
+    # rather than guessing which rows belong to it.
+    if args.fleet_id_out:
+        with open(args.fleet_id_out, "w") as fh:
+            fh.write(node.fleet_id)
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:

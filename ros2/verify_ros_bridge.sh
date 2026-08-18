@@ -20,8 +20,8 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${IMAGE:-fleetmem-ros:jazzy}"
 CRDB_CONTAINER="${CRDB_CONTAINER:-crdb}"
 CRDB_HOST_IP="${CRDB_HOST_IP:-127.0.0.1}"
-DSN="postgresql://root@${CRDB_HOST_IP}:26257/fleet?sslmode=disable"
-FLEET_ID="${FLEET_ID:-ros2-demo-$(date +%s)}"
+DSN="postgresql://root@${CRDB_HOST_IP}:26257/fleet_ros?sslmode=disable"
+FLEET_NAME="${FLEET_NAME:-ros2-demo-$(date +%s)}"   # resolved to a UUID by ensure_fleet
 DOCK="${DOCK:-ros-dock-1}"
 DURATION="${DURATION:-45}"
 OUT="$REPO/.tmp/ros2_evidence"
@@ -30,13 +30,13 @@ RUNNER="fleetmem-ros-run-$$"
 mkdir -p "$OUT"
 rm -f "$OUT"/*.log "$OUT"/*.txt 2>/dev/null
 
-crdb_sql() { docker exec -i "$CRDB_CONTAINER" ./cockroach sql --insecure --database=fleet "$@"; }
+crdb_sql() { docker exec -i "$CRDB_CONTAINER" ./cockroach sql --insecure --database=fleet_ros "$@"; }
 
 echo "=============================================================="
 echo " FleetMem ROS 2 bridge -- end-to-end verification"
 echo "=============================================================="
 echo "  image     : $IMAGE"
-echo "  fleet_id  : $FLEET_ID   (fresh: cannot collide with demo data)"
+echo "  fleet     : $FLEET_NAME   (fresh: cannot collide with demo data)"
 echo "  dock      : $DOCK"
 echo "  database  : $DSN  (LOCAL docker node, never the Cloud cluster)"
 echo "  duration  : ${DURATION}s"
@@ -72,7 +72,6 @@ docker run --rm --name "$RUNNER" --net=host \
   -e ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST \
   -e PYTHONUNBUFFERED=1 \
   "$IMAGE" bash -c "
-set -u
 source /opt/ros/jazzy/setup.bash
 mkdir -p /repo/.tmp/ros2_evidence
 cd /repo
@@ -82,8 +81,9 @@ python3 ros2/fake_robot.py --robots R1:-6.0:0.0,R2:6.0:0.0 --rate 10 \
 FAKE=\$!
 sleep 3
 
-python3 ros2/fleetmem_bridge.py --robots R1,R2 --dock '$DOCK' --fleet '$FLEET_ID' \
+python3 ros2/fleetmem_bridge.py --robots R1,R2 --dock '$DOCK' --fleet '$FLEET_NAME' \
     --dock-x 0 --dock-y 0 --claim-radius 3.0 --dwell 8 --speed 0.6 --tick-hz 5 \
+    --fleet-id-out /repo/.tmp/ros2_evidence/fleet_id.txt \
     > /repo/.tmp/ros2_evidence/bridge.log 2>&1 &
 BRIDGE=\$!
 sleep 2
@@ -111,11 +111,24 @@ sleep 2
 " > "$OUT/container.log" 2>&1 &
 RUNPID=$!
 
+# --- resolve the run's fleet UUID (written by the bridge at startup) -------------------
+FLEET_ID=""
+for _ in $(seq 1 30); do
+  sleep 1
+  [ -s "$OUT/fleet_id.txt" ] && { FLEET_ID="$(cat "$OUT/fleet_id.txt")"; break; }
+done
+if [ -z "$FLEET_ID" ]; then
+  echo "FAIL: the bridge never reported a fleet UUID -- it did not start. bridge.log:"
+  cat "$OUT/bridge.log" 2>/dev/null | tail -20; cat "$OUT/container.log" 2>/dev/null | tail -10
+  docker rm -f "$RUNNER" >/dev/null 2>&1; exit 4
+fi
+echo "[run] fleet_id = $FLEET_ID"
+
 # --- mid-run snapshot: the contended instant ------------------------------------------
 echo "[run] nodes started; sampling the database while the robots contend..."
 SNAP="$OUT/db_during_contention.txt"
 : > "$SNAP"
-for t in 12 18 24; do
+for t in 14 20 26; do
   sleep 6
   {
     echo "----- t=${t}s : live claims on $DOCK -----"
