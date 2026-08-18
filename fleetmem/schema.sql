@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS resource_claims (
     robot_id        STRING NOT NULL,
     purpose         STRING,
     claimed_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Leases. A robot that crashes must not hold a dock forever, so every claim carries an
+    -- expiry that a live robot renews by heartbeat. The unique index predicate CANNOT test
+    -- expiry (now() is not immutable, so it cannot appear in an index predicate) — instead
+    -- expired claims are reaped inside the same transaction as the next claim attempt,
+    -- which keeps "reap then claim" atomic under serializable isolation.
+    expires_at      TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '30 seconds'),
+    renewed_at      TIMESTAMPTZ,
+    expired         BOOL NOT NULL DEFAULT false,
     released_at     TIMESTAMPTZ,
     INDEX by_robot (fleet_id, robot_id, released_at)
 );

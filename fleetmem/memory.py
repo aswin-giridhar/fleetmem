@@ -29,22 +29,71 @@ class FleetMemory:
 
     # ---------------------------------------------------------------- claims
 
-    def claim(self, resource_id: str, robot_id: str, purpose: str = "") -> dict:
+    DEFAULT_LEASE_SECONDS = 30
+
+    def reap_expired(self) -> int:
+        """Release claims whose lease has lapsed. Returns how many were reclaimed.
+
+        Safe to call from anywhere: a lapsed lease means the holder stopped heartbeating,
+        so the resource is genuinely free.
+        """
+        rows = self.db.query(
+            """UPDATE resource_claims SET released_at = now(), expired = true
+               WHERE fleet_id = %s AND released_at IS NULL AND expires_at <= now()
+               RETURNING resource_id, robot_id""",
+            (self.fleet_id,),
+        )
+        for row in rows:
+            log.warning("lease expired: %s reclaimed from %s",
+                        row["resource_id"], row["robot_id"])
+            self.record_event(row["robot_id"], "lease_expired",
+                              {"resource_id": row["resource_id"]})
+        return len(rows)
+
+    def renew(self, resource_id: str, robot_id: str,
+              lease_seconds: int | None = None) -> bool:
+        """Heartbeat: extend this robot's lease. False if it no longer holds the resource."""
+        lease = lease_seconds or self.DEFAULT_LEASE_SECONDS
+        rows = self.db.query(
+            """UPDATE resource_claims
+               SET expires_at = now() + (%s::INT * INTERVAL '1 second'), renewed_at = now()
+               WHERE fleet_id = %s AND resource_id = %s AND robot_id = %s
+                 AND released_at IS NULL
+               RETURNING id, expires_at""",
+            (lease, self.fleet_id, resource_id, robot_id),
+        )
+        return bool(rows)
+
+    def claim(self, resource_id: str, robot_id: str, purpose: str = "",
+              lease_seconds: int | None = None) -> dict:
         """Atomically claim a physical resource.
 
         Returns the claim on success. Raises ResourceHeldError — carrying the CURRENT
         holder — if another robot already holds it. The caller is expected to re-route,
         not to retry: the rejection is deterministic, not a transient conflict.
         """
+        lease = lease_seconds or self.DEFAULT_LEASE_SECONDS
+
         def _txn(cur):
+            # Reap-then-claim in ONE transaction. Under serializable isolation this means a
+            # lapsed lease is reclaimed and the new claim taken atomically — two robots
+            # racing for a resource whose holder has crashed still produce exactly one
+            # winner, because the reap and the insert cannot interleave.
+            cur.execute(
+                """UPDATE resource_claims SET released_at = now(), expired = true
+                   WHERE fleet_id = %s AND resource_id = %s AND released_at IS NULL
+                     AND expires_at <= now()""",
+                (self.fleet_id, resource_id),
+            )
             try:
                 cur.execute(
                     """
-                    INSERT INTO resource_claims (fleet_id, resource_id, robot_id, purpose)
-                    VALUES (%s, %s, %s, %s)
-                    RETURNING id, resource_id, robot_id, claimed_at
+                    INSERT INTO resource_claims
+                        (fleet_id, resource_id, robot_id, purpose, expires_at)
+                    VALUES (%s, %s, %s, %s, now() + (%s::INT * INTERVAL '1 second'))
+                    RETURNING id, resource_id, robot_id, claimed_at, expires_at
                     """,
-                    (self.fleet_id, resource_id, robot_id, purpose),
+                    (self.fleet_id, resource_id, robot_id, purpose, lease),
                 )
                 return {"granted": True, **cur.fetchone()}
             except psycopg.errors.UniqueViolation:
@@ -53,7 +102,7 @@ class FleetMemory:
                 cur.connection.rollback()
                 cur.execute(
                     """
-                    SELECT robot_id, claimed_at FROM resource_claims
+                    SELECT robot_id, claimed_at, expires_at FROM resource_claims
                     WHERE fleet_id = %s AND resource_id = %s AND released_at IS NULL
                     """,
                     (self.fleet_id, resource_id),
@@ -85,15 +134,19 @@ class FleetMemory:
     def holder_of(self, resource_id: str) -> str | None:
         rows = self.db.query(
             """SELECT robot_id FROM resource_claims
-               WHERE fleet_id = %s AND resource_id = %s AND released_at IS NULL""",
+               WHERE fleet_id = %s AND resource_id = %s AND released_at IS NULL
+                 AND expires_at > now()""",
             (self.fleet_id, resource_id),
         )
         return rows[0]["robot_id"] if rows else None
 
     def live_claims(self) -> list[dict]:
         return self.db.query(
-            """SELECT resource_id, robot_id, claimed_at, purpose FROM resource_claims
-               WHERE fleet_id = %s AND released_at IS NULL ORDER BY claimed_at""",
+            """SELECT resource_id, robot_id, claimed_at, purpose, expires_at,
+                      (expires_at - now()) AS ttl
+               FROM resource_claims
+               WHERE fleet_id = %s AND released_at IS NULL AND expires_at > now()
+               ORDER BY claimed_at""",
             (self.fleet_id,),
         )
 
