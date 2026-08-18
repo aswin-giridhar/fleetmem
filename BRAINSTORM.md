@@ -144,10 +144,15 @@ property it protects, and nothing in a functional test will reveal it.
 3. **Latency under contention.** p50 772ms at 50 robots is dominated by queueing on a
    32-connection pool against a remote cluster. Co-locating compute with the cluster and
    widening the pool are the obvious next moves, both unmeasured.
-4. **The agent's reasoning is shallow.** Nova picks a dock and a speed. Negotiation,
-   preemption, and planning around *predicted* contention are not there.
+4. **The agent's reasoning is narrow — and this is a schema limitation, not a model one.**
+   The prompt asks for exactly four fields (`target`, `speed`, `reason`, `memory_used`), so
+   negotiation and preemption are impossible for *any* model, however capable. An earlier
+   draft of this document blamed the model, which was wrong. We did A/B the four models
+   available in the account on the real prompt, and switched Nova Lite → **Nova Pro**: it was
+   both faster (1041ms vs 1312ms) and the only one that cited the memory it used. Widening
+   the output schema is the actual fix.
 
 ## If there is time for exactly one more thing
-**A ROS 2 bridge.** Everything else on this list is an improvement to something that already
-works; that one changes what the project *is* — from a convincing simulation to something a
-real fleet could adopt.
+**Widen the agent's output schema** so it can negotiate and preempt rather than only pick a
+dock and a speed. With the ROS 2 bridge in place, the memory layer and the actuator path are
+both real; the reasoning is now the narrowest part of the loop.

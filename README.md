@@ -183,6 +183,44 @@ read from config. The safety properties are database properties, not model prope
 
 ---
 
+## It drives real ROS 2
+
+The robot bodies in the web demo are simulated. They do not have to be —
+`ros2/fleetmem_bridge.py` is a real `rclpy` node that puts the database between a navigation
+stack and the actuator:
+
+- subscribes `/<robot>/odom` (`nav_msgs/Odometry`)
+- publishes `/<robot>/cmd_vel` (`geometry_msgs/Twist`)
+- calls `claim` / `act` / `renew` / `release` between them
+
+`act(dock, robot, epoch)` runs on **every tick that commands motion**, not once at claim
+time — a fencing token that is only checked at acquisition is not gating anything.
+
+```bash
+./ros2/verify_ros_bridge.sh     # builds the image, runs two converging robots
+```
+
+Observed across four runs — two robots 6 m either side of one dock, converging at equal
+speed:
+
+```
+[R1] CLAIM GRANTED on ros-dock-1 epoch=11 -- actuator authorised
+[R2] CLAIM DENIED  on ros-dock-1 -- held by R1; publishing zero Twist to /R2/cmd_vel
+[R1] RELEASED ros-dock-1 after 8.0s dwell
+[R2] CLAIM GRANTED on ros-dock-1 epoch=14
+```
+
+The denied robot's integrated pose **froze at +2.94 for eleven seconds** and resumed the
+instant CockroachDB granted its claim. `fake_robot.py` integrates the `cmd_vel` it receives,
+so a denial is physically observable rather than merely logged, and independent
+`ros2 topic echo` subscribers captured the zero Twists rather than the bridge reporting on
+itself.
+
+**Not verified, and worth knowing:** both nodes run in one container, so cross-container DDS
+discovery is untested; there is no Gazebo or TF tree; the `StaleFenceError` path is reachable
+but was not exercised in these runs; and it has never been run against the Cloud cluster,
+deliberately, to avoid polluting the demo database. See `ros2/README.md`.
+
 ## Deployment
 
 The demo runs on an EC2 instance in `us-west-2`, behind Caddy with an automatic Let's
