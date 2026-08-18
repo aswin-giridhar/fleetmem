@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -70,6 +70,16 @@ def index():
 @app.get("/2d", response_class=HTMLResponse)
 def index_2d():
     return (WEB / "index.html").read_text()
+
+
+@app.get("/app.css")
+def app_css():
+    return FileResponse(WEB / "app.css", media_type="text/css")
+
+
+@app.get("/app.js")
+def app_js():
+    return FileResponse(WEB / "app.js", media_type="text/javascript")
 
 
 def _store_status() -> dict:

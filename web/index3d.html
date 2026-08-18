@@ -3,156 +3,97 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>FleetMem 3D — agentic memory for robot fleets</title>
-<style>
-  :root{
-    --bg:#070a0f; --panel:rgba(16,22,31,.86); --line:#1e2735; --ink:#e6edf6; --dim:#8296ad;
-    --accent:#39d4a0; --warn:#ffb454; --bad:#ff6b6b; --claim:#5aa9ff;
-    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  }
-  *{box-sizing:border-box}
-  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);
-       font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-  #scene{position:fixed;inset:0}
-  .hud{position:fixed;background:var(--panel);border:1px solid var(--line);
-       border-radius:11px;padding:13px 15px;backdrop-filter:blur(14px)}
-  #top{top:14px;left:14px;right:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
-  #top h1{font-size:16px;margin:0 10px 0 0;letter-spacing:.2px}
-  .tag{font:11px/1 var(--mono);color:var(--dim);border:1px solid var(--line);
-       padding:5px 9px;border-radius:20px;white-space:nowrap}
-  .tag b{color:var(--accent);font-weight:600}
-  #side{top:82px;right:14px;width:352px;max-height:calc(100vh - 170px);overflow:auto}
-  #side h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);
-           margin:16px 0 8px}
-  #side h2:first-child{margin-top:0}
-  table{width:100%;border-collapse:collapse;font:12px/1.45 var(--mono)}
-  td,th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
-  th{color:var(--dim);font-weight:500}
-  #bottom{bottom:14px;left:14px;display:flex;gap:9px;flex-wrap:wrap;align-items:center}
-  button{background:#1b2431;color:var(--ink);border:1px solid #2b3648;padding:10px 15px;
-         border-radius:8px;cursor:pointer;font-size:13px;font-weight:500}
-  button:hover{background:#222e3e}
-  button.primary{background:var(--accent);color:#04150f;border-color:var(--accent);font-weight:700}
-  #log{font:11.5px/1.65 var(--mono);max-height:150px;overflow:auto}
-  #log div{padding:2px 0;border-bottom:1px solid #141b26}
-  .k-race{color:var(--warn);font-weight:700}.k-claim{color:var(--claim)}
-  .k-recall{color:var(--accent)}.k-blocked{color:var(--bad)}.k-arrive{color:var(--dim)}
-  .hit{border-bottom:1px solid var(--line);padding:7px 0;font-size:12.5px}
-  .hit .d{color:var(--accent);font:11px var(--mono)}
-  .hit .m{color:var(--dim);font-size:11px}
-  input{background:#0d131b;border:1px solid #2b3648;color:var(--ink);padding:9px 11px;
-        border-radius:7px;width:100%;font-size:13px;margin-bottom:8px}
-  .hintbar{position:fixed;bottom:16px;right:16px;color:var(--dim);font:11px var(--mono);
-           background:var(--panel);border:1px solid var(--line);padding:7px 11px;border-radius:8px}
-  a{color:var(--accent)}
-  #conn{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:98;
-        background:#3a1620;border:1px solid #ff6b6b;color:#ffd9d9;padding:8px 15px;
-        border-radius:8px;font:12px/1.4 var(--mono);display:none}
-  .legend{display:flex;gap:13px;flex-wrap:wrap;font:11px/1.5 var(--mono);color:var(--dim)}
-  .legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
-  .sql3d{font:11px/1.6 var(--mono);background:#080b10;border:1px solid var(--line);border-radius:7px;padding:9px;color:#9fb4cc;white-space:pre-wrap;overflow-x:auto}
-  .ttl{color:var(--dim);font-size:11px}
-  .ttl.low{color:var(--warn)}
-  kbd{background:#0d131b;border:1px solid #2b3648;border-bottom-width:2px;border-radius:4px;
-      padding:1px 6px;font:11px var(--mono);color:var(--dim)}
-  .empty{color:var(--dim);font-size:12px;line-height:1.6}
-  .empty button{margin-top:7px;padding:6px 11px;font-size:12px}
+<title>FleetMem — fleet memory, in three dimensions</title>
+<link rel="stylesheet" href="/app.css"/>
 
-  #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:88px;z-index:99;
-         background:#3a1620;border:1px solid #ff6b6b;color:#ffd9d9;padding:11px 16px;
-         border-radius:9px;font:12.5px/1.5 var(--mono);max-width:min(680px,88vw);
-         display:none;box-shadow:0 8px 28px rgba(0,0,0,.5)}
-  #toast.ok{background:#0f2b22;border-color:var(--accent);color:#c9f5e6}
-  .viewtoggle{display:inline-flex;border:1px solid var(--line);border-radius:20px;
-              overflow:hidden}
-  .viewtoggle a{padding:5px 13px;font:11px/1.5 var(--mono);color:var(--dim);
-                text-decoration:none}
-  .viewtoggle a.on{background:var(--accent);color:#04150f;font-weight:700}
-
-</style>
 </head>
 <body>
-<canvas id="scene"></canvas>
 
-<div class="hud" id="top">
-  <h1>FleetMem <span style="color:var(--dim);font-weight:400;font-size:12px">3D</span></h1>
-  <span class="tag">memory <b id="t-db">…</b></span>
-  <span class="tag">embeddings <b id="t-emb">…</b></span>
-  <span class="tag">reasoning <b id="t-llm">…</b></span>
-  <span class="tag">tick <b id="t-tick">0</b></span>
-  <span class="viewtoggle"><a href="/" class="on">3D</a><a href="/2d">2D</a></span>
-</div>
-
-<div class="hud" id="side">
-  <h2>Live claims (CockroachDB)</h2>
-  <table><thead><tr><th>resource</th><th>held by</th><th>lease</th></tr></thead>
-  <tbody id="claims"><tr><td colspan="2" style="color:var(--dim)">none</td></tr></tbody></table>
-
-  <h2>Fleet memory — semantic recall</h2>
-  <input id="q" value="pallet slips at bay 12" onkeydown="if(event.key==='Enter')recall()"/>
-  <button onclick="recall()" style="width:100%">Recall across fleet</button>
-  <div id="hits" style="margin-top:9px"></div>
-
-  <h2>Legend</h2>
-  <div class="legend">
-    <span><i style="background:#39d4a0"></i>holding a claim</span>
-    <span><i style="background:#ffb454"></i>re-routing (denied)</span>
-    <span><i style="background:#ff6b6b"></i>blocked</span>
-    <span><i style="background:#8296ad"></i>idle</span>
+<header class="masthead">
+  <div class="wordmark"><b>FleetMem</b><span>3D console</span></div>
+  <div class="lamps">
+    <span class="lamp" id="lamp-db"><i></i>memory <b>…</b></span>
+    <span class="lamp" id="lamp-emb"><i></i>embeddings <b>…</b></span>
+    <span class="lamp" id="lamp-rea"><i></i>reasoning <b>…</b></span>
+    <span class="lamp" id="lamp-s3"><i></i>artifacts <b>…</b></span>
   </div>
+  <div class="controls-right">
+    <span class="seg">
+      <a href="/" class="on">3D</a><a href="/2d" >2D</a>
+    </span>
+    <span class="seg">
+      <button data-theme-btn="light" title="Light">Light</button>
+      <button data-theme-btn="dark" title="Dark">Dark</button>
+      <button data-theme-btn="auto" title="Match system">Auto</button>
+    </span>
+  </div>
+</header>
 
-  <h2>What the database is doing</h2>
-  <div class="sql3d">-- at most ONE live claim per resource
-CREATE UNIQUE INDEX one_holder_per_resource
-  ON resource_claims (fleet_id, resource_id)
-  WHERE released_at IS NULL;
+<main class="stage">
+  <div class="viewport"><canvas id="scene"></canvas></div>
 
--- fleet-wide recall; fleet_id is the index PREFIX
-SELECT lesson, embedding &lt;=&gt; $1 AS distance
-  FROM fleet_memory WHERE fleet_id = $2
-  ORDER BY embedding &lt;=&gt; $1 LIMIT 5;</div>
+  <aside class="sidebar">
+    <div class="sect">
+      <h2>Shared resources <em id="tick">tick 0</em></h2>
+      <div class="annunciator" id="annunciator"></div>
+    </div>
 
-  <h2>Event stream</h2>
-  <div id="log"></div>
-</div>
+    <div class="sect">
+      <h2>Fleet memory</h2>
+      <input class="field" id="q" value="pallet slips at bay 12"
+             aria-label="Search the fleet's memory"/>
+      <button class="btn" style="width:100%" onclick="FleetMem.recall()">Recall across fleet</button>
+      <div id="hits" style="margin-top:6px"></div>
+    </div>
 
-<div class="hud" id="bottom">
-  <button class="primary" onclick="race()">⚡ Race R1 + R2 for dock-3</button>
-  <button onclick="task('R3')">Task R3</button>
-  <button onclick="task('R5')">Task R5</button>
-  <button onclick="reset()">Release all</button>
-</div>
-<div id="conn"></div>
-<div id="toast"></div>
-<div class="hintbar">drag to orbit · scroll to zoom · <kbd>R</kbd> race · <kbd>X</kbd> release</div>
+    <div class="sect">
+      <h2>What the database is doing</h2>
+      <div class="code"><i>-- at most one live claim per resource</i>
+<b>CREATE UNIQUE INDEX</b> one_holder_per_resource
+  <b>ON</b> resource_claims (fleet_id, resource_id)
+  <b>WHERE</b> released_at <b>IS NULL</b>;
 
+<i>-- fleet_id is the vector index PREFIX,</i>
+<i>-- so isolation is structural, not a filter</i>
+<b>SELECT</b> lesson, embedding <em>&lt;=&gt;</em> $1 <b>AS</b> distance
+  <b>FROM</b> fleet_memory <b>WHERE</b> fleet_id = $2
+  <b>ORDER BY</b> embedding <em>&lt;=&gt;</em> $1 <b>LIMIT</b> 5;</div>
+    </div>
+
+    <div class="sect">
+      <h2>Activity</h2>
+      <div class="feed" id="feed"></div>
+    </div>
+
+    <div class="sect">
+      <h2>Robot status</h2>
+      <div class="legend">
+        <span><i style="background:var(--advisory)"></i>holding a claim</span>
+        <span><i style="background:var(--caution)"></i>re-routing</span>
+        <span><i style="background:var(--alarm)"></i>blocked</span>
+        <span><i style="background:var(--faint)"></i>idle</span>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<footer class="dock">
+  <button class="btn primary" onclick="FleetMem.race()">Send two robots to dock-3</button>
+  <button class="btn" onclick="FleetMem.task('R3')">Give R3 a task</button>
+  <button class="btn" onclick="FleetMem.task('R5')">Give R5 a task</button>
+  <button class="btn" onclick="FleetMem.release()">Release all claims</button>
+  <span class="hint">Drag to orbit · scroll to zoom · <kbd>R</kbd> race · <kbd>X</kbd> release</span>
+</footer>
+
+<div id="conn" role="status"></div>
+<div id="toast" role="status"></div>
 <script type="module">
-import * as THREE from './vendor/three.module.js';
+import * as THREE from '/vendor/three.module.js';
+import * as UI from '/app.js';
 
-function toast(msg, ok){
-  const el = document.getElementById('toast');
-  el.textContent = msg; el.className = ok ? 'ok' : '';
-  el.style.display = 'block';
-  clearTimeout(el._t); el._t = setTimeout(()=> el.style.display='none', ok ? 3200 : 8000);
-}
-async function call(url, opts, label){
-  try{
-    const r = await fetch(url, opts);
-    const body = await r.json().catch(()=>({}));
-    if(!r.ok){
-      const d = body.detail;
-      toast(`${label} failed (HTTP ${r.status}): ` +
-            (typeof d === 'object' ? (d.message||'') + ' ' + (d.errors||[]).join('; ')
-                                   : (d || 'unknown error')), false);
-      return null;
-    }
-    if(body.errors && body.errors.length) toast(`${label}: ${body.errors.join('; ')}`, false);
-    return body;
-  }catch(e){ toast(`${label} failed: ${e.message}`, false); return null; }
-}
+UI.bindShell();
 
-
-const W = 100, H = 60;                      // simulation units
+const W = 100, H = 60;
 const canvas = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -160,276 +101,192 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x070a0f);
-scene.fog = new THREE.Fog(0x070a0f, 120, 300);
+const camera = new THREE.PerspectiveCamera(46, 1, .1, 1000);
 
-const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 1000);
+/* Theme drives the scene too, so light mode is a real mode and not just chrome. */
+let COL = {};
+function readTheme(){
+  const dark = UI.isDark();
+  COL = {
+    bg:       dark ? 0x0f151c : 0xeef1f5,
+    floor:    dark ? 0x141b23 : 0xe7ecf2,
+    grid:     dark ? 0x1f2a36 : 0xd7dee7,
+    slot:     dark ? 0x1d2733 : 0xffffff,
+    slotHeld: dark ? 0x14324f : 0xd8e7fb,
+    advisory: dark ? 0x4d9fff : 0x1d6fe0,
+    caution:  dark ? 0xf5a524 : 0xb26a00,
+    alarm:    dark ? 0xf4483f : 0xc62f26,
+    idle:     dark ? 0x66768a : 0x93a1b2,
+    label:    dark ? '#e3eaf3' : '#111820',
+    sub:      dark ? '#8d9cae' : '#5c6b7d',
+  };
+  scene.background = new THREE.Color(COL.bg);
+  scene.fog = new THREE.Fog(COL.bg, 130, 320);
+  if (floor) floor.material.color.setHex(COL.floor);
+  if (grid) { grid.material.color.setHex(COL.grid); grid.material.opacity = dark ? .45 : .3; }
+  ambient.intensity = dark ? .85 : 1.25;
+  key.intensity     = dark ? 1.75 : 1.5;
+}
 
-// --- hand-rolled orbit (avoids shipping another dependency) -----------------
-let camTheta = -2.30, camPhi = 0.78, camDist = 108;
-// shifted left so the right-hand HUD panel does not cover the warehouse floor
-const target = new THREE.Vector3(-14, 2, 0);
+const ambient = new THREE.AmbientLight(0xffffff, 1);
+scene.add(ambient);
+const key = new THREE.DirectionalLight(0xffffff, 1.6);
+key.position.set(58, 96, 42); key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+const d = 92;
+Object.assign(key.shadow.camera, {left:-d, right:d, top:d, bottom:-d, near:1, far:270});
+scene.add(key);
+
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(W+40, H+40),
+  new THREE.MeshStandardMaterial({color:0x141b23, roughness:.95, metalness:.02}));
+floor.rotation.x = -Math.PI/2; floor.receiveShadow = true; scene.add(floor);
+const grid = new THREE.GridHelper(Math.max(W,H)+40, 28, 0x1f2a36, 0x1f2a36);
+grid.material.transparent = true; grid.position.y = .02; scene.add(grid);
+
+let camTheta = -2.30, camPhi = .80, camDist = 112;
+const target = new THREE.Vector3(-6, 2, 0);
 function placeCamera(){
   camera.position.set(
-    target.x + camDist * Math.sin(camPhi) * Math.cos(camTheta),
-    target.y + camDist * Math.cos(camPhi),
-    target.z + camDist * Math.sin(camPhi) * Math.sin(camTheta));
+    target.x + camDist*Math.sin(camPhi)*Math.cos(camTheta),
+    target.y + camDist*Math.cos(camPhi),
+    target.z + camDist*Math.sin(camPhi)*Math.sin(camTheta));
   camera.lookAt(target);
 }
-let dragging=false, lastX=0, lastY=0;
-canvas.addEventListener('pointerdown', e=>{dragging=true;lastX=e.clientX;lastY=e.clientY;});
-addEventListener('pointerup', ()=>dragging=false);
-addEventListener('pointermove', e=>{
-  if(!dragging) return;
-  camTheta += (e.clientX-lastX)*0.006;
-  camPhi = Math.max(0.18, Math.min(1.45, camPhi + (e.clientY-lastY)*0.005));
-  lastX=e.clientX; lastY=e.clientY; placeCamera();
+let dragging=false,lx=0,ly=0;
+canvas.addEventListener('pointerdown',e=>{dragging=true;lx=e.clientX;ly=e.clientY;});
+addEventListener('pointerup',()=>dragging=false);
+addEventListener('pointermove',e=>{
+  if(!dragging)return;
+  camTheta += (e.clientX-lx)*.006;
+  camPhi = Math.max(.2, Math.min(1.45, camPhi + (e.clientY-ly)*.005));
+  lx=e.clientX; ly=e.clientY; placeCamera();
 });
-canvas.addEventListener('wheel', e=>{
-  e.preventDefault();
-  camDist = Math.max(55, Math.min(260, camDist + e.deltaY*0.09)); placeCamera();
-}, {passive:false});
+canvas.addEventListener('wheel',e=>{e.preventDefault();
+  camDist=Math.max(58,Math.min(250,camDist+e.deltaY*.09)); placeCamera();},{passive:false});
 
-// --- lighting ---------------------------------------------------------------
-scene.add(new THREE.AmbientLight(0x7e97b4, 0.85));
-const key = new THREE.DirectionalLight(0xffffff, 1.75);
-key.position.set(60, 95, 40); key.castShadow = true;
-key.shadow.mapSize.set(2048,2048);
-const d = 90;
-Object.assign(key.shadow.camera, {left:-d, right:d, top:d, bottom:-d, near:1, far:260});
-scene.add(key);
-scene.add(new THREE.HemisphereLight(0x6d93cc, 0x121a24, 0.75));
-const rim = new THREE.DirectionalLight(0x5aa9ff, 0.55);
-rim.position.set(-70, 40, -55); scene.add(rim);
-
-// --- floor ------------------------------------------------------------------
-const floor = new THREE.Mesh(
-  new THREE.PlaneGeometry(W+34, H+34),
-  new THREE.MeshStandardMaterial({color:0x151d28, roughness:.92, metalness:.08}));
-floor.rotation.x = -Math.PI/2; floor.receiveShadow = true;
-scene.add(floor);
-const grid = new THREE.GridHelper(Math.max(W,H)+34, 26, 0x1d2836, 0x151d28);
-grid.position.y = 0.02; scene.add(grid);
-
-// world coords: sim (x,y) -> three (x, 0, z), centred
 const wx = x => x - W/2, wz = y => y - H/2;
-
-// --- text labels as sprites -------------------------------------------------
-function labelSprite(text, color='#e6edf6', size=52){
-  const c = document.createElement('canvas'); c.width=512; c.height=128;
-  const g = c.getContext('2d');
-  g.font = `700 ${size}px ui-monospace,monospace`;
-  g.textAlign='center'; g.textBaseline='middle';
-  g.fillStyle=color; g.fillText(text, 256, 64);
-  const tex = new THREE.CanvasTexture(c); tex.anisotropy = 4;
-  const spr = new THREE.Sprite(new THREE.SpriteMaterial({map:tex, transparent:true, depthTest:false}));
-  spr.scale.set(17, 4.3, 1);
-  return spr;
+function label(text, colour, px=46, w=15, h=3.8){
+  const c=document.createElement('canvas'); c.width=512; c.height=128;
+  const g=c.getContext('2d');
+  g.font=`600 ${px}px 'IBM Plex Mono',monospace`; g.textAlign='center'; g.textBaseline='middle';
+  g.fillStyle=colour; g.fillText(text,256,64);
+  const t=new THREE.CanvasTexture(c); t.anisotropy=4;
+  const s=new THREE.Sprite(new THREE.SpriteMaterial({map:t,transparent:true,depthTest:false}));
+  s.scale.set(w,h,1); s.userData={text,px,w,h}; return s;
+}
+function relabel(sprite, colour){
+  const {text,px}=sprite.userData;
+  const c=document.createElement('canvas'); c.width=512; c.height=128;
+  const g=c.getContext('2d');
+  g.font=`600 ${px}px 'IBM Plex Mono',monospace`; g.textAlign='center'; g.textBaseline='middle';
+  g.fillStyle=colour; g.fillText(text,256,64);
+  sprite.material.map.dispose();
+  sprite.material.map=new THREE.CanvasTexture(c); sprite.material.needsUpdate=true;
 }
 
-// --- docks ------------------------------------------------------------------
-const dockMeshes = {}, dockBeams = {}, dockLabels = {};
-function buildDock(id, x, y){
-  const group = new THREE.Group();
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(14, 3.6, 10),
-    new THREE.MeshStandardMaterial({color:0x1b2534, roughness:.6, metalness:.35}));
-  body.position.y = 1.6; body.castShadow = true; body.receiveShadow = true;
-  group.add(body);
-  const ring = new THREE.Mesh(
-    new THREE.TorusGeometry(7.4, .28, 8, 48),
-    new THREE.MeshBasicMaterial({color:0x2b3648}));
-  ring.rotation.x = -Math.PI/2; ring.position.y = .12; group.add(ring);
-  // vertical claim beam — lit only while a robot holds the resource
-  const beam = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.15, 1.15, 34, 16, 1, true),
-    new THREE.MeshBasicMaterial({color:0x5aa9ff, transparent:true, opacity:0, side:THREE.DoubleSide}));
-  beam.position.y = 17; group.add(beam);
-  const lbl = labelSprite(id, '#8296ad', 44); lbl.position.set(0, 7.5, 0); group.add(lbl);
-  group.position.set(wx(x), 0, wz(y));
-  scene.add(group);
-  dockMeshes[id]=body; dockBeams[id]=beam; dockLabels[id]=lbl;
+const slots={}, beams={}, slotLabels={}, robots={}, trails={};
+function buildSlot(id,x,y){
+  const g=new THREE.Group();
+  const body=new THREE.Mesh(new THREE.BoxGeometry(15,3.4,10.5),
+    new THREE.MeshStandardMaterial({color:0x1d2733,roughness:.62,metalness:.22}));
+  body.position.y=1.7; body.castShadow=true; body.receiveShadow=true; g.add(body);
+  const beam=new THREE.Mesh(new THREE.CylinderGeometry(1.25,1.25,36,16,1,true),
+    new THREE.MeshBasicMaterial({color:0x4d9fff,transparent:true,opacity:0,side:THREE.DoubleSide}));
+  beam.position.y=18; g.add(beam);
+  const lbl=label(id,'#8d9cae',42,15,3.8); lbl.position.set(0,7.4,0); g.add(lbl);
+  g.position.set(wx(x),0,wz(y)); scene.add(g);
+  slots[id]=body; beams[id]=beam; slotLabels[id]=lbl;
 }
-
-// --- robots -----------------------------------------------------------------
-const robotGroups = {}, robotTrails = {};
-const COLORS = {idle:0x8296ad, moving:0x39d4a0, arrived:0x39d4a0,
-                blocked:0xff6b6b, rerouting:0xffb454};
 function buildRobot(id){
-  const g = new THREE.Group();
-  const base = new THREE.Mesh(
-    new THREE.CylinderGeometry(3.4, 3.7, 2.0, 22),
-    new THREE.MeshStandardMaterial({color:0x2a3546, roughness:.55, metalness:.5}));
-  base.position.y = .85; base.castShadow = true; g.add(base);
-  const shell = new THREE.Mesh(
-    new THREE.BoxGeometry(5.2, 3.0, 5.2),
-    new THREE.MeshStandardMaterial({color:0x39d4a0, roughness:.3, metalness:.3,
-                                    emissive:0x39d4a0, emissiveIntensity:.35}));
-  shell.position.y = 3.4; shell.castShadow = true; g.add(shell);
-  const beacon = new THREE.Mesh(
-    new THREE.SphereGeometry(.72, 14, 14),
-    new THREE.MeshBasicMaterial({color:0x39d4a0}));
-  beacon.position.y = 5.5; g.add(beacon);
-  const lbl = labelSprite(id, '#ffffff', 50); lbl.position.set(0, 7.4, 0);
-  lbl.scale.set(11,2.8,1); g.add(lbl);
+  const g=new THREE.Group();
+  const base=new THREE.Mesh(new THREE.CylinderGeometry(3.5,3.8,2,22),
+    new THREE.MeshStandardMaterial({color:0x2a3546,roughness:.5,metalness:.45}));
+  base.position.y=.9; base.castShadow=true; g.add(base);
+  const shell=new THREE.Mesh(new THREE.BoxGeometry(5.4,3.1,5.4),
+    new THREE.MeshStandardMaterial({color:0x66768a,roughness:.32,metalness:.25,
+                                    emissive:0x000000,emissiveIntensity:.4}));
+  shell.position.y=3.5; shell.castShadow=true; g.add(shell);
+  const lamp=new THREE.Mesh(new THREE.SphereGeometry(.8,14,14),
+    new THREE.MeshBasicMaterial({color:0x66768a}));
+  lamp.position.y=5.7; g.add(lamp);
+  const lbl=label(id,'#e3eaf3',48,10,2.6); lbl.position.set(0,8.6,0); g.add(lbl);
   scene.add(g);
-  robotGroups[id] = {g, shell, beacon};
-  const trailGeo = new THREE.BufferGeometry();
-  trailGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(20*3), 3));
-  const trail = new THREE.Line(trailGeo,
-    new THREE.LineBasicMaterial({color:0x39d4a0, transparent:true, opacity:.4}));
-  scene.add(trail); robotTrails[id] = trail;
+  robots[id]={g,shell,lamp,lbl};
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(20*3),3));
+  const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:0x4d9fff,transparent:true,opacity:.35}));
+  scene.add(line); trails[id]=line;
 }
 
-// --- state ------------------------------------------------------------------
-let S = null, built = false;
-function applyState(s){
-  S = s;
+let built=false;
+function onState(s){
   if(!built){
-    s.docks.forEach(d => buildDock(d.id, d.x, d.y));
-    s.robots.forEach(r => buildRobot(r.id));
-    built = true; placeCamera();
+    s.docks.forEach(d=>buildSlot(d.id,d.x,d.y));
+    s.robots.forEach(r=>buildRobot(r.id));
+    built=true; readTheme(); placeCamera(); applyLabelColours();
   }
+  document.getElementById('tick').textContent = 'tick ' + s.tick;
   for(const d of s.docks){
-    const held = !!d.holder;
-    dockMeshes[d.id].material.color.setHex(held ? 0x2f5a86 : 0x1f2a3a);
-    dockBeams[d.id].material.opacity = held ? 0.34 : 0.0;
-    dockBeams[d.id].material.color.setHex(held ? 0x5aa9ff : 0x5aa9ff);
-    dockLabels[d.id].material.map.image && null;
+    const held=!!d.holder;
+    slots[d.id].material.color.setHex(held?COL.slotHeld:COL.slot);
+    beams[d.id].material.color.setHex(COL.advisory);
+    beams[d.id].material.opacity = held?.32:0;
   }
   for(const r of s.robots){
-    const rg = robotGroups[r.id]; if(!rg) continue;
-    const tx = wx(r.x), tz = wz(r.y);
-    rg.g.position.lerp(new THREE.Vector3(tx, 0, tz), 0.35);
-    const col = COLORS[r.status] ?? 0x8296ad;
-    rg.shell.material.color.setHex(col);
-    rg.shell.material.emissive.setHex(col);
-    rg.beacon.material.color.setHex(col);
-    // trail
-    const pts = (r.trail||[]).slice(-20);
-    const arr = robotTrails[r.id].geometry.attributes.position.array;
+    const R=robots[r.id]; if(!R) continue;
+    R.g.position.lerp(new THREE.Vector3(wx(r.x),0,wz(r.y)),.35);
+    const col = r.status==='blocked'?COL.alarm
+              : r.status==='rerouting'?COL.caution
+              : r.holding?COL.advisory:COL.idle;
+    R.shell.material.color.setHex(col);
+    R.shell.material.emissive.setHex(UI.isDark()?col:0x000000);
+    R.lamp.material.color.setHex(col);
+    const pts=(r.trail||[]).slice(-20);
+    const arr=trails[r.id].geometry.attributes.position.array;
     for(let i=0;i<20;i++){
-      const p = pts[i] ?? pts[pts.length-1] ?? [r.x, r.y];
-      arr[i*3]=wx(p[0]); arr[i*3+1]=1.2; arr[i*3+2]=wz(p[1]);
+      const p=pts[i] ?? pts[pts.length-1] ?? [r.x,r.y];
+      arr[i*3]=wx(p[0]); arr[i*3+1]=1.3; arr[i*3+2]=wz(p[1]);
     }
-    robotTrails[r.id].geometry.attributes.position.needsUpdate = true;
+    trails[r.id].geometry.attributes.position.needsUpdate=true;
+    trails[r.id].material.color.setHex(COL.advisory);
   }
-  document.getElementById('t-tick').textContent = s.tick;
-  renderClaims(); renderLog();
+  UI.renderAnnunciator(s);
+  UI.renderFeed(s);
 }
 
-function renderClaims(){
-  const ttls = S.claim_ttl || {};
-  const rows = Object.entries(S.claims||{});
-  document.getElementById('claims').innerHTML = rows.length
-    ? rows.map(([r,who])=>{
-        const t = ttls[r];
-        const low = t !== undefined && t < 10;
-        return `<tr><td>${r}</td><td style="color:var(--claim)">${who}</td>` +
-               `<td class="ttl${low?' low':''}">${t!==undefined?`lease ${t}s`:''}</td></tr>`;
-      }).join('')
-    : '<tr><td colspan="3" style="color:var(--dim)">no live claims — press ' +
-      '<kbd>R</kbd> to race two robots for dock-3</td></tr>';
+function applyLabelColours(){
+  for(const id in slotLabels) relabel(slotLabels[id], COL.sub);
+  for(const id in robots) relabel(robots[id].lbl, COL.label);
 }
-function renderLog(){
-  document.getElementById('log').innerHTML = (S.log||[]).slice().reverse()
-    .map(l=>`<div class="k-${l.kind}">[${String(l.t).padStart(4,'0')}] ${l.text}</div>`).join('');
-}
-
-// --- render loop ------------------------------------------------------------
-function resize(){
-  const w = innerWidth, h = innerHeight;
-  renderer.setSize(w, h, false);
-  camera.aspect = w/h; camera.updateProjectionMatrix();
-}
-addEventListener('resize', resize); resize(); placeCamera();
-
-let t = 0;
-function animate(){
-  requestAnimationFrame(animate);
-  t += 0.016;
-  // gentle pulse on live claim beams
-  for(const id in dockBeams){
-    const b = dockBeams[id];
-    if(b.material.opacity > 0.01)
-      b.material.opacity = 0.22 + 0.13*Math.sin(t*3.1);
-  }
-  for(const id in robotGroups) robotGroups[id].g.rotation.y = Math.sin(t*0.6)*0.09;
-  renderer.render(scene, camera);
-}
-animate();
-
-// --- data -------------------------------------------------------------------
-
-// A silently dead socket looks exactly like an idle fleet. Show it, and reconnect.
-let ws, wsRetry = 0;
-function showConn(msg){
-  const el = document.getElementById('conn');
-  if(!el) return;
-  if(msg){ el.textContent = msg; el.style.display = 'block'; }
-  else el.style.display = 'none';
-}
-function connect(){
-  ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
-  ws.onopen = () => { wsRetry = 0; showConn(null); };
-  ws.onmessage = e => { showConn(null); onState(JSON.parse(e.data)); };
-  ws.onclose = () => {
-    wsRetry++;
-    showConn(`disconnected from server — reconnecting (attempt ${wsRetry})…`);
-    setTimeout(connect, Math.min(1000 * wsRetry, 6000));
-  };
-  ws.onerror = () => ws.close();
-}
-function fmtTTL(iso){
-  if(!iso) return '';
-  const s = Math.round((new Date(iso) - Date.now())/1000);
-  return s > 0 ? `${s}s` : 'expired';
-}
-
-const onState = applyState;
-connect();
-addEventListener('keydown', e => {
-  if(e.target.tagName === 'INPUT') return;
-  if(e.key === 'r' || e.key === 'R') window.race();
-  if(e.key === 'x' || e.key === 'X') window.reset();
+addEventListener('fleetmem:theme', ()=>{
+  readTheme();
+  applyLabelColours();
+  if(State_latest) onState(State_latest);
 });
+let State_latest=null;
 
-const J = b => ({method:'POST', headers:{'content-type':'application/json'},
-                 body: JSON.stringify(b)});
-window.race = async () => {
-  const r = await call('/api/race', J({resource:'dock-3',robots:['R1','R2']}), 'Race');
-  if(r){ const w=(r.results||[]).find(x=>x.granted), l=(r.results||[]).find(x=>!x.granted);
-         toast(`${w?w.robot:'?'} won dock-3 · ${l?l.robot:'?'} denied (23505) and re-routed`, true); }
-};
-window.task = async id => {
-  const r = await call('/api/task', J({robot_id:id, task:'deliver pallet'}), `Task ${id}`);
-  if(r) toast(`${id} -> ${r.granted || 'blocked (all candidates held)'}`, true);
-};
-window.reset = async () => { if(await call('/api/reset', {method:'POST'}, 'Reset'))
-                               toast('all claims released', true); };
-window.recall = async () => {
-  const q = document.getElementById('q').value;
-  const r = await call('/api/recall?q='+encodeURIComponent(q), undefined, 'Recall');
-  if(!r) return;
-  document.getElementById('hits').innerHTML = r.hits.length ? r.hits.map(h=>
-    `<div class="hit"><div class="d">distance ${h.distance} · ${h.robot_id}</div>
-     <div>${h.lesson}</div><div class="m">${h.location||'—'} · ${h.provider}</div></div>`).join('')
-    : '<div class="empty">No lessons stored yet. The fleet\'s memory may have been reset.' +
-      '<br><button onclick="reseed()">Restore baseline lessons</button></div>';
-};
+function resize(){
+  const box=canvas.parentElement.getBoundingClientRect();
+  renderer.setSize(box.width, box.height, false);
+  camera.aspect=box.width/box.height; camera.updateProjectionMatrix();
+}
+addEventListener('resize',resize);
+readTheme(); resize(); placeCamera();
 
-window.reseed = async () => {
-  const r = await call('/api/reseed', {method:'POST'}, 'Reseed');
-  if(r){ toast(`fleet memory restored — ${r.lessons} lessons`, true); recall(); }
-};
-
-(async function boot(){
-  const h = await (await fetch('/healthz')).json();
-  document.getElementById('t-db').textContent  = h.config?.target ?? '?';
-  document.getElementById('t-emb').textContent = h.embeddings_provider ?? '?';
-  document.getElementById('t-llm').textContent = h.reasoning_provider ?? '?';
-  recall();
+let t=0;
+(function animate(){
+  requestAnimationFrame(animate);
+  t+=.016;
+  for(const id in beams){
+    const b=beams[id];
+    if(b.material.opacity>.01) b.material.opacity=.24+.12*Math.sin(t*3);
+  }
+  renderer.render(scene,camera);
 })();
+
+UI.connect(s=>{State_latest=s; onState(s);});
+UI.renderLamps(); setInterval(UI.renderLamps, 15000);
+UI.recall();
 </script>
 </body>
 </html>

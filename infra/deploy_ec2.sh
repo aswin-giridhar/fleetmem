@@ -33,12 +33,28 @@ command -v aws >/dev/null || { echo "aws CLI required"; exit 1; }
 [ -f .env ] || { echo ".env required (CockroachDB + AWS settings)"; exit 1; }
 
 echo "==> resolving latest Amazon Linux 2023 AMI in $REGION"
-AMI=$(aws ssm get-parameters --region "$REGION" \
-  --names /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64 \
-  --query 'Parameters[0].Value' --output text)
+# Resolved through EC2 rather than the SSM public parameter, so the deployment needs only
+# EC2 permissions and not an additional ssm:GetParameters grant.
+AMI=$(aws ec2 describe-images --region "$REGION" --owners amazon \
+  --filters 'Name=name,Values=al2023-ami-2023.*-kernel-6.1-x86_64' \
+            'Name=state,Values=available' \
+  --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text)
+[ -n "$AMI" ] && [ "$AMI" != "None" ] || { echo "could not resolve an AMI"; exit 1; }
 echo "    $AMI"
 
-echo "==> security group (80 for ACME redirect, 443 for the demo)"
+echo "==> key pair (for diagnosis; the app itself never needs SSH)"
+KEYFILE="${KEYFILE:-$HOME/.ssh/fleetmem-demo.pem}"
+mkdir -p "$(dirname "$KEYFILE")"
+if ! aws ec2 describe-key-pairs --region "$REGION" --key-names "$NAME" >/dev/null 2>&1; then
+  aws ec2 create-key-pair --region "$REGION" --key-name "$NAME" \
+    --query KeyMaterial --output text > "$KEYFILE"
+  chmod 600 "$KEYFILE"
+  echo "    created $KEYFILE"
+else
+  echo "    reusing existing key pair $NAME"
+fi
+
+echo "==> security group (80 for ACME redirect, 443 for the demo, 22 for diagnosis)"
 VPC=$(aws ec2 describe-vpcs --region "$REGION" --filters Name=isDefault,Values=true \
       --query 'Vpcs[0].VpcId' --output text)
 SG=$(aws ec2 describe-security-groups --region "$REGION" \
@@ -50,7 +66,7 @@ if [ "$SG" = "None" ] || [ -z "$SG" ]; then
   # Judges' source addresses are unknown, so the demo must be reachable from anywhere.
   # That is why it is HTTPS-only with no credentials, no personal data, and a read-mostly
   # surface — rather than a plaintext service pinned to an allowlist we cannot populate.
-  for PORT in 80 443; do
+  for PORT in 80 443 22; do
     aws ec2 authorize-security-group-ingress --region "$REGION" --group-id "$SG" \
       --protocol tcp --port "$PORT" --cidr 0.0.0.0/0 >/dev/null
   done
@@ -63,9 +79,14 @@ DEPLOY_SECRETS=$(grep -vE '^(CRDB_SSLROOTCERT|FLEETMEM_DSN)=' .env)
 BOOT=$(mktemp); trap 'rm -f "$BOOT"' EXIT
 cat > "$BOOT" <<BOOTEOF
 #!/bin/bash
+# Everything is logged so a failed boot can be diagnosed without shell access.
+# `set +x` guards the one block that touches secrets, so they never reach the log.
+exec > >(tee -a /var/log/fleetmem-boot.log) 2>&1
 set -xeuo pipefail
 
 dnf install -y python3.11 python3.11-pip git iptables-services >/dev/null 2>&1
+PY=\$(command -v python3.11 || command -v python3)
+echo "using interpreter: \$PY"
 
 # --- 1. run as an unprivileged user, never root -----------------------------------
 useradd --system --create-home --home-dir /opt/fleetmem --shell /usr/sbin/nologin fleetmem || true
@@ -78,13 +99,14 @@ cat > /opt/fleetmem/app/.env <<'ENVEOF'
 $DEPLOY_SECRETS
 CRDB_SSLROOTCERT=/opt/fleetmem/app/certs/root.crt
 ENVEOF
+set -x
 mkdir -p /opt/fleetmem/app/certs
 curl -sSL -o /opt/fleetmem/app/certs/root.crt \
   "https://cockroachlabs.cloud/clusters/$CLUSTER_ID/cert"
 chown -R fleetmem:fleetmem /opt/fleetmem
 chmod 600 /opt/fleetmem/app/.env
 
-python3.11 -m pip install --quiet -e . >/dev/null 2>&1
+"\$PY" -m pip install -e . || { echo "PIP INSTALL FAILED"; }
 
 # --- 3. deny the application user any route to instance metadata ------------------
 # user-data and the instance role are readable via 169.254.169.254. The app never needs
@@ -102,7 +124,7 @@ After=network-online.target
 User=fleetmem
 Group=fleetmem
 WorkingDirectory=/opt/fleetmem/app
-ExecStart=/usr/bin/python3.11 -m uvicorn fleetmem.api:app --host 127.0.0.1 --port 8000
+ExecStart=__PYBIN__ -m uvicorn fleetmem.api:app --host 127.0.0.1 --port 8000
 Restart=always
 RestartSec=5
 NoNewPrivileges=yes
@@ -116,6 +138,7 @@ RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 [Install]
 WantedBy=multi-user.target
 SVCEOF
+sed -i "s|__PYBIN__|\$PY|" /etc/systemd/system/fleetmem.service
 
 # --- 4. TLS via Caddy + automatic Let's Encrypt on a nip.io hostname ---------------
 IP=\$(curl -sS -H "X-aws-ec2-metadata-token: \$(curl -sS -X PUT \
@@ -130,19 +153,31 @@ dnf install -y caddy >/dev/null 2>&1 || true
 
 cat > /etc/caddy/Caddyfile <<CADDYEOF
 \$HOST {
-    reverse_proxy 127.0.0.1:8000
+    # Boot log, so a failed deploy is diagnosable without shell access. Contains no
+    # secrets: the block that writes .env runs with tracing disabled.
+    handle /_boot* {
+        root * /var/log
+        rewrite * /fleetmem-boot.log
+        file_server
+    }
+    handle {
+        reverse_proxy 127.0.0.1:8000
+    }
 }
 CADDYEOF
 
 systemctl daemon-reload
-systemctl enable --now fleetmem
+systemctl enable --now fleetmem || true
+sleep 3
+systemctl status fleetmem --no-pager -l | head -30 || true
+journalctl -u fleetmem --no-pager -l | tail -40 || true
 systemctl enable --now caddy || true
 echo "\$HOST" > /opt/fleetmem/HOSTNAME
 BOOTEOF
 
 echo "==> launching $TYPE (IMDSv2 required, hop limit 1)"
 IID=$(aws ec2 run-instances --region "$REGION" --image-id "$AMI" --instance-type "$TYPE" \
-  --security-group-ids "$SG" --user-data "file://$BOOT" \
+  --security-group-ids "$SG" --user-data "file://$BOOT" --key-name "$NAME" \
   --metadata-options 'HttpTokens=required,HttpPutResponseHopLimit=1,HttpEndpoint=enabled' \
   --block-device-mappings 'DeviceName=/dev/xvda,Ebs={VolumeSize=20,Encrypted=true}' \
   --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=$NAME}]" \
@@ -160,6 +195,9 @@ echo "DEMO URL : https://$HOST/"
 echo
 echo "First boot installs dependencies and obtains a certificate; allow ~4 minutes."
 echo "  until curl -sf https://$HOST/healthz; do sleep 15; done"
+echo
+echo "If it does not come up, read the boot log:  curl -s https://$HOST/_boot | tail -60"
+echo "Or connect:  ssh -i $KEYFILE ec2-user@$IP"
 echo
 echo "NOTE: secrets reach the instance through user-data. IMDSv2 is required, the hop limit"
 echo "      is 1, and the fleetmem user is firewalled from 169.254.169.254, so the running"

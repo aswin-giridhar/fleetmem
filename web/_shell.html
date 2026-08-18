@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>__TITLE__</title>
+<link rel="stylesheet" href="/app.css"/>
+__EXTRA_HEAD__
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wordmark"><b>FleetMem</b><span>__VIEWTAG__</span></div>
+  <div class="lamps">
+    <span class="lamp" id="lamp-db"><i></i>memory <b>…</b></span>
+    <span class="lamp" id="lamp-emb"><i></i>embeddings <b>…</b></span>
+    <span class="lamp" id="lamp-rea"><i></i>reasoning <b>…</b></span>
+    <span class="lamp" id="lamp-s3"><i></i>artifacts <b>…</b></span>
+  </div>
+  <div class="controls-right">
+    <span class="seg">
+      <a href="/" __ON3D__>3D</a><a href="/2d" __ON2D__>2D</a>
+    </span>
+    <span class="seg">
+      <button data-theme-btn="light" title="Light">Light</button>
+      <button data-theme-btn="dark" title="Dark">Dark</button>
+      <button data-theme-btn="auto" title="Match system">Auto</button>
+    </span>
+  </div>
+</header>
+
+<main class="stage">
+  <div class="viewport">__VIEWPORT__</div>
+
+  <aside class="sidebar">
+    <div class="sect">
+      <h2>Shared resources <em id="tick">tick 0</em></h2>
+      <div class="annunciator" id="annunciator"></div>
+    </div>
+
+    <div class="sect">
+      <h2>Fleet memory</h2>
+      <input class="field" id="q" value="pallet slips at bay 12"
+             aria-label="Search the fleet's memory"/>
+      <button class="btn" style="width:100%" onclick="FleetMem.recall()">Recall across fleet</button>
+      <div id="hits" style="margin-top:6px"></div>
+    </div>
+
+    <div class="sect">
+      <h2>What the database is doing</h2>
+      <div class="code"><i>-- at most one live claim per resource</i>
+<b>CREATE UNIQUE INDEX</b> one_holder_per_resource
+  <b>ON</b> resource_claims (fleet_id, resource_id)
+  <b>WHERE</b> released_at <b>IS NULL</b>;
+
+<i>-- fleet_id is the vector index PREFIX,</i>
+<i>-- so isolation is structural, not a filter</i>
+<b>SELECT</b> lesson, embedding <em>&lt;=&gt;</em> $1 <b>AS</b> distance
+  <b>FROM</b> fleet_memory <b>WHERE</b> fleet_id = $2
+  <b>ORDER BY</b> embedding <em>&lt;=&gt;</em> $1 <b>LIMIT</b> 5;</div>
+    </div>
+
+    <div class="sect">
+      <h2>Activity</h2>
+      <div class="feed" id="feed"></div>
+    </div>
+
+    <div class="sect">
+      <h2>Robot status</h2>
+      <div class="legend">
+        <span><i style="background:var(--advisory)"></i>holding a claim</span>
+        <span><i style="background:var(--caution)"></i>re-routing</span>
+        <span><i style="background:var(--alarm)"></i>blocked</span>
+        <span><i style="background:var(--faint)"></i>idle</span>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<footer class="dock">
+  <button class="btn primary" onclick="FleetMem.race()">Send two robots to dock-3</button>
+  <button class="btn" onclick="FleetMem.task('R3')">Give R3 a task</button>
+  <button class="btn" onclick="FleetMem.task('R5')">Give R5 a task</button>
+  <button class="btn" onclick="FleetMem.release()">Release all claims</button>
+  <span class="hint">__HINT__</span>
+</footer>
+
+<div id="conn" role="status"></div>
+<div id="toast" role="status"></div>

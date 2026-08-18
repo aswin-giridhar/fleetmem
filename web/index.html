@@ -3,314 +3,167 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>FleetMem — agentic memory for robot fleets</title>
-<style>
-  :root{
-    --bg:#0b0f14; --panel:#121821; --line:#1e2735; --ink:#e6edf6; --dim:#8296ad;
-    --accent:#39d4a0; --warn:#ffb454; --bad:#ff6b6b; --claim:#5aa9ff;
-    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);
-       font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-  header{padding:14px 20px;border-bottom:1px solid var(--line);display:flex;
-         align-items:baseline;gap:16px;flex-wrap:wrap}
-  h1{font-size:17px;margin:0;letter-spacing:.2px}
-  .tag{font:11px/1 var(--mono);color:var(--dim);border:1px solid var(--line);
-       padding:4px 8px;border-radius:20px}
-  .tag b{color:var(--accent);font-weight:600}
-  main{display:grid;grid-template-columns:minmax(0,1.55fr) minmax(320px,.85fr);
-       gap:16px;padding:16px;align-items:start}
-  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
-  .panel h2{font-size:12px;text-transform:uppercase;letter-spacing:.09em;
-            color:var(--dim);margin:0 0 10px}
-  canvas{width:100%;height:auto;display:block;background:#080b10;
-         border:1px solid var(--line);border-radius:8px}
-  .controls{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
-  button{background:#1b2431;color:var(--ink);border:1px solid #2b3648;padding:9px 14px;
-         border-radius:7px;cursor:pointer;font-size:13px;font-weight:500}
-  button:hover{background:#222e3e;border-color:#3a4759}
-  button.primary{background:var(--accent);color:#04150f;border-color:var(--accent);font-weight:700}
-  button.primary:hover{filter:brightness(1.08)}
-  input{background:#0d131b;border:1px solid #2b3648;color:var(--ink);padding:9px 11px;
-        border-radius:7px;width:100%;font-size:13px}
-  table{width:100%;border-collapse:collapse;font:12px/1.45 var(--mono)}
-  td,th{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left}
-  th{color:var(--dim);font-weight:500}
-  .sql{font:11.5px/1.6 var(--mono);background:#080b10;border:1px solid var(--line);
-       border-radius:7px;padding:10px;color:#9fb4cc;white-space:pre-wrap;overflow-x:auto}
-  .sql .k{color:#7aa2f7}.sql .s{color:var(--accent)}.sql .c{color:#5a6b80}
-  #log{font:11.5px/1.7 var(--mono);max-height:210px;overflow:auto}
-  #log div{padding:2px 0;border-bottom:1px solid #141b26}
-  .k-claim{color:var(--claim)}.k-race{color:var(--warn);font-weight:700}
-  .k-recall{color:var(--accent)}.k-blocked{color:var(--bad)}.k-arrive{color:var(--dim)}
-  .hit{border-bottom:1px solid var(--line);padding:7px 0}
-  .hit .d{color:var(--accent);font:11px var(--mono)}
-  .hit .m{color:var(--dim);font-size:11px}
-  .stat{display:flex;justify-content:space-between;font:12px var(--mono);
-        padding:3px 0;color:var(--dim)}
-  .stat b{color:var(--ink);font-weight:600}
-  .row{display:flex;gap:8px;margin-top:8px}
-  .note{color:var(--dim);font-size:11.5px;margin-top:8px;line-height:1.5}
-  #conn{position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:98;
-        background:#3a1620;border:1px solid #ff6b6b;color:#ffd9d9;padding:8px 15px;
-        border-radius:8px;font:12px/1.4 var(--mono);display:none}
-  .legend{display:flex;gap:13px;flex-wrap:wrap;font:11px/1.5 var(--mono);color:var(--dim)}
-  .legend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
-  .ttl{color:var(--dim);font-size:11px}
-  .ttl.low{color:var(--warn)}
-  kbd{background:#0d131b;border:1px solid #2b3648;border-bottom-width:2px;border-radius:4px;
-      padding:1px 6px;font:11px var(--mono);color:var(--dim)}
-  .empty{color:var(--dim);font-size:12px;line-height:1.6}
-  .empty button{margin-top:7px;padding:6px 11px;font-size:12px}
+<title>FleetMem — fleet memory, plan view</title>
+<link rel="stylesheet" href="/app.css"/>
 
-  #toast{position:fixed;left:50%;transform:translateX(-50%);bottom:88px;z-index:99;
-         background:#3a1620;border:1px solid #ff6b6b;color:#ffd9d9;padding:11px 16px;
-         border-radius:9px;font:12.5px/1.5 var(--mono);max-width:min(680px,88vw);
-         display:none;box-shadow:0 8px 28px rgba(0,0,0,.5)}
-  #toast.ok{background:#0f2b22;border-color:var(--accent);color:#c9f5e6}
-  .viewtoggle{display:inline-flex;border:1px solid var(--line);border-radius:20px;
-              overflow:hidden}
-  .viewtoggle a{padding:5px 13px;font:11px/1.5 var(--mono);color:var(--dim);
-                text-decoration:none}
-  .viewtoggle a.on{background:var(--accent);color:#04150f;font-weight:700}
-
-</style>
 </head>
 <body>
-<header>
-  <h1>FleetMem</h1>
-  <span class="tag">memory layer <b id="t-db">…</b></span>
-  <span class="tag">embeddings <b id="t-emb">…</b></span>
-  <span class="tag">reasoning <b id="t-llm">…</b></span>
-  <span class="tag">tick <b id="t-tick">0</b></span>
-  <span class="viewtoggle"><a href="/">3D</a><a href="/2d" class="on">2D</a></span>
+
+<header class="masthead">
+  <div class="wordmark"><b>FleetMem</b><span>2D console</span></div>
+  <div class="lamps">
+    <span class="lamp" id="lamp-db"><i></i>memory <b>…</b></span>
+    <span class="lamp" id="lamp-emb"><i></i>embeddings <b>…</b></span>
+    <span class="lamp" id="lamp-rea"><i></i>reasoning <b>…</b></span>
+    <span class="lamp" id="lamp-s3"><i></i>artifacts <b>…</b></span>
+  </div>
+  <div class="controls-right">
+    <span class="seg">
+      <a href="/" >3D</a><a href="/2d" class="on">2D</a>
+    </span>
+    <span class="seg">
+      <button data-theme-btn="light" title="Light">Light</button>
+      <button data-theme-btn="dark" title="Dark">Dark</button>
+      <button data-theme-btn="auto" title="Match system">Auto</button>
+    </span>
+  </div>
 </header>
 
-<main>
-  <div>
-    <div class="panel">
-      <h2>Warehouse — 6 robots, 5 shared resources</h2>
-      <canvas id="cv" width="1000" height="600"></canvas>
-      <div class="controls">
-        <button class="primary" onclick="race()">⚡ Race R1 + R2 for dock-3</button>
-        <button onclick="task('R3')">Assign R3 a task</button>
-        <button onclick="task('R5')">Assign R5 a task</button>
-        <button onclick="reset()">Release all claims</button>
-      </div>
-      <div class="note">The race launches two agents at the same dock <b>simultaneously</b>.
-        CockroachDB decides the winner; the loser reads the winner's row and re-routes.</div>
+<main class="stage">
+  <div class="viewport"><canvas id="scene"></canvas></div>
+
+  <aside class="sidebar">
+    <div class="sect">
+      <h2>Shared resources <em id="tick">tick 0</em></h2>
+      <div class="annunciator" id="annunciator"></div>
     </div>
 
-    <div class="panel" style="margin-top:16px">
+    <div class="sect">
+      <h2>Fleet memory</h2>
+      <input class="field" id="q" value="pallet slips at bay 12"
+             aria-label="Search the fleet's memory"/>
+      <button class="btn" style="width:100%" onclick="FleetMem.recall()">Recall across fleet</button>
+      <div id="hits" style="margin-top:6px"></div>
+    </div>
+
+    <div class="sect">
       <h2>What the database is doing</h2>
-      <div class="sql"><span class="c">-- at most one live claim per resource, enforced by the DB</span>
-<span class="k">CREATE UNIQUE INDEX</span> one_holder_per_resource
-  <span class="k">ON</span> resource_claims (fleet_id, resource_id) <span class="k">WHERE</span> released_at <span class="k">IS NULL</span>;
+      <div class="code"><i>-- at most one live claim per resource</i>
+<b>CREATE UNIQUE INDEX</b> one_holder_per_resource
+  <b>ON</b> resource_claims (fleet_id, resource_id)
+  <b>WHERE</b> released_at <b>IS NULL</b>;
 
-<span class="c">-- fleet-wide semantic recall; fleet_id is the index PREFIX, not a filter</span>
-<span class="k">SELECT</span> lesson, embedding <span class="s">&lt;=&gt;</span> $1 <span class="k">AS</span> distance
-  <span class="k">FROM</span> fleet_memory <span class="k">WHERE</span> fleet_id = $2
-  <span class="k">ORDER BY</span> embedding <span class="s">&lt;=&gt;</span> $1 <span class="k">LIMIT</span> 5;</div>
-    </div>
-  </div>
-
-  <div>
-    <div class="panel">
-      <h2>Live claims (CockroachDB)</h2>
-      <table><thead><tr><th>resource</th><th>held by</th><th>since</th></tr></thead>
-      <tbody id="claims"><tr><td colspan="3" style="color:var(--dim)">none</td></tr></tbody></table>
+<i>-- fleet_id is the vector index PREFIX,</i>
+<i>-- so isolation is structural, not a filter</i>
+<b>SELECT</b> lesson, embedding <em>&lt;=&gt;</em> $1 <b>AS</b> distance
+  <b>FROM</b> fleet_memory <b>WHERE</b> fleet_id = $2
+  <b>ORDER BY</b> embedding <em>&lt;=&gt;</em> $1 <b>LIMIT</b> 5;</div>
     </div>
 
-    <div class="panel" style="margin-top:16px">
-      <h2>Fleet memory — semantic recall</h2>
-      <input id="q" placeholder="e.g. pallet slips at bay 12" value="pallet slips at bay 12"
-             onkeydown="if(event.key==='Enter')recall()"/>
-      <div class="row"><button onclick="recall()">Recall</button>
-        <button onclick="teach()">Teach a lesson</button></div>
-      <div id="hits" style="margin-top:10px"></div>
+    <div class="sect">
+      <h2>Activity</h2>
+      <div class="feed" id="feed"></div>
     </div>
 
-    <div class="panel" style="margin-top:16px">
-      <h2>Event stream</h2>
-      <div id="log"></div>
+    <div class="sect">
+      <h2>Robot status</h2>
+      <div class="legend">
+        <span><i style="background:var(--advisory)"></i>holding a claim</span>
+        <span><i style="background:var(--caution)"></i>re-routing</span>
+        <span><i style="background:var(--alarm)"></i>blocked</span>
+        <span><i style="background:var(--faint)"></i>idle</span>
+      </div>
     </div>
-
-    <div class="panel" style="margin-top:16px">
-      <h2>Memory stats</h2>
-      <div class="stat"><span>lessons stored</span><b id="s-mem">–</b></div>
-      <div class="stat"><span>live claims</span><b id="s-claims">–</b></div>
-      <div class="stat"><span>agent decisions</span><b id="s-dec">–</b></div>
-    </div>
-  </div>
+  </aside>
 </main>
 
-<div id="conn"></div>
-<div id="toast"></div>
-<script>
-function toast(msg, ok){
-  const el = document.getElementById('toast');
-  el.textContent = msg; el.className = ok ? 'ok' : '';
-  el.style.display = 'block';
-  clearTimeout(el._t); el._t = setTimeout(()=> el.style.display='none', ok ? 3200 : 8000);
-}
-async function call(url, opts, label){
-  try{
-    const r = await fetch(url, opts);
-    const body = await r.json().catch(()=>({}));
-    if(!r.ok){
-      const d = body.detail;
-      toast(`${label} failed (HTTP ${r.status}): ` +
-            (typeof d === 'object' ? (d.message||'') + ' ' + (d.errors||[]).join('; ')
-                                   : (d || 'unknown error')), false);
-      return null;
-    }
-    if(body.errors && body.errors.length) toast(`${label}: ${body.errors.join('; ')}`, false);
-    return body;
-  }catch(e){ toast(`${label} failed: ${e.message}`, false); return null; }
-}
+<footer class="dock">
+  <button class="btn primary" onclick="FleetMem.race()">Send two robots to dock-3</button>
+  <button class="btn" onclick="FleetMem.task('R3')">Give R3 a task</button>
+  <button class="btn" onclick="FleetMem.task('R5')">Give R5 a task</button>
+  <button class="btn" onclick="FleetMem.release()">Release all claims</button>
+  <span class="hint"><kbd>R</kbd> race · <kbd>X</kbd> release</span>
+</footer>
 
-const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
-let S = null;
+<div id="conn" role="status"></div>
+<div id="toast" role="status"></div>
+<script type="module">
+import * as UI from '/app.js';
+UI.bindShell();
+
+const canvas=document.getElementById('scene'), ctx=canvas.getContext('2d');
+let S=null;
+
+function palette(){
+  return {
+    floor:UI.cssVar('--floor'), grid:UI.cssVar('--grid'), line:UI.cssVar('--line'),
+    ink:UI.cssVar('--ink'), dim:UI.cssVar('--dim'), faint:UI.cssVar('--faint'),
+    advisory:UI.cssVar('--advisory'), caution:UI.cssVar('--caution'),
+    alarm:UI.cssVar('--alarm'), panel:UI.cssVar('--panel'), sunken:UI.cssVar('--sunken'),
+  };
+}
+function resize(){
+  const box=canvas.parentElement.getBoundingClientRect();
+  const dpr=Math.min(devicePixelRatio,2);
+  canvas.width=box.width*dpr; canvas.height=box.height*dpr;
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  draw();
+}
+addEventListener('resize',resize);
+addEventListener('fleetmem:theme',draw);
 
 function draw(){
   if(!S) return;
-  const W = cv.width, H = cv.height, sx = W/S.width, sy = H/S.height;
-  ctx.clearRect(0,0,W,H);
-  ctx.fillStyle = '#080b10'; ctx.fillRect(0,0,W,H);
+  const P=palette();
+  const box=canvas.parentElement.getBoundingClientRect();
+  const w=box.width, h=box.height;
+  const pad=34, sx=(w-pad*2)/S.width, sy=(h-pad*2)/S.height, k=Math.min(sx,sy);
+  const ox=(w-S.width*k)/2, oy=(h-S.height*k)/2;
+  const X=x=>ox+x*k, Y=y=>oy+y*k;
 
-  ctx.strokeStyle = '#111a24'; ctx.lineWidth = 1;
-  for(let x=0;x<W;x+=50){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-  for(let y=0;y<H;y+=50){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  ctx.fillStyle=P.floor; ctx.fillRect(0,0,w,h);
+  ctx.strokeStyle=P.grid; ctx.lineWidth=1;
+  for(let gx=0;gx<=S.width;gx+=10){ctx.beginPath();ctx.moveTo(X(gx),Y(0));ctx.lineTo(X(gx),Y(S.height));ctx.stroke();}
+  for(let gy=0;gy<=S.height;gy+=10){ctx.beginPath();ctx.moveTo(X(0),Y(gy));ctx.lineTo(X(S.width),Y(gy));ctx.stroke();}
 
   for(const d of S.docks){
-    const x = d.x*sx, y = d.y*sy, held = !!d.holder;
-    ctx.fillStyle = held ? 'rgba(90,169,255,.16)' : 'rgba(130,150,173,.08)';
-    ctx.strokeStyle = held ? '#5aa9ff' : '#2b3648';
-    ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.roundRect(x-42, y-24, 84, 48, 7); ctx.fill(); ctx.stroke();
-    ctx.fillStyle = held ? '#5aa9ff' : '#8296ad';
-    ctx.font = '600 13px ui-monospace,monospace'; ctx.textAlign = 'center';
-    ctx.fillText(d.id, x, y-2);
-    if(held){ ctx.fillStyle='#e6edf6'; ctx.font='11px ui-monospace,monospace';
-              ctx.fillText('held by '+d.holder, x, y+15); }
+    const held=!!d.holder, x=X(d.x), y=Y(d.y);
+    ctx.fillStyle=held?P.sunken:P.panel;
+    ctx.strokeStyle=held?P.advisory:P.line;
+    ctx.lineWidth=held?2:1;
+    ctx.beginPath(); ctx.roundRect(x-46,y-25,92,50,5); ctx.fill(); ctx.stroke();
+    ctx.fillStyle=held?P.advisory:P.dim;
+    ctx.font="600 13px 'IBM Plex Mono',monospace"; ctx.textAlign='center';
+    ctx.fillText(d.id,x,y-2);
+    if(held){ctx.fillStyle=P.dim;ctx.font="400 11px 'IBM Plex Mono',monospace";
+             ctx.fillText('held by '+d.holder,x,y+15);}
   }
 
   for(const r of S.robots){
-    if(r.trail && r.trail.length>1){
-      ctx.strokeStyle='rgba(57,212,160,.22)'; ctx.lineWidth=2; ctx.beginPath();
-      r.trail.forEach((p,i)=> i? ctx.lineTo(p[0]*sx,p[1]*sy) : ctx.moveTo(p[0]*sx,p[1]*sy));
-      ctx.stroke();
+    if(r.trail&&r.trail.length>1){
+      ctx.strokeStyle=P.advisory; ctx.globalAlpha=.28; ctx.lineWidth=2; ctx.beginPath();
+      r.trail.forEach((p,i)=>i?ctx.lineTo(X(p[0]),Y(p[1])):ctx.moveTo(X(p[0]),Y(p[1])));
+      ctx.stroke(); ctx.globalAlpha=1;
     }
-    const x=r.x*sx, y=r.y*sy;
-    const col = r.status==='blocked' ? '#ff6b6b'
-              : r.status==='rerouting' ? '#ffb454'
-              : r.holding ? '#39d4a0' : '#8296ad';
-    ctx.beginPath(); ctx.arc(x,y,13,0,7); ctx.fillStyle=col; ctx.fill();
-    ctx.fillStyle='#04150f'; ctx.font='700 11px ui-monospace,monospace';
+    const x=X(r.x), y=Y(r.y);
+    const col=r.status==='blocked'?P.alarm:r.status==='rerouting'?P.caution
+             :r.holding?P.advisory:P.faint;
+    ctx.beginPath(); ctx.arc(x,y,14,0,7); ctx.fillStyle=col; ctx.fill();
+    ctx.fillStyle=P.panel; ctx.font="700 11px 'IBM Plex Mono',monospace";
     ctx.textAlign='center'; ctx.fillText(r.id,x,y+4);
-    if(r.note){ ctx.fillStyle='#8296ad'; ctx.font='10.5px ui-sans-serif';
-                ctx.fillText(r.note.slice(0,46), x, y+30); }
+    if(r.note){ctx.fillStyle=P.faint; ctx.font="400 10.5px 'IBM Plex Mono',monospace";
+               ctx.fillText(r.note.slice(0,44),x,y+30);}
   }
 }
 
-function renderLog(){
-  const el=document.getElementById('log');
-  el.innerHTML = (S.log||[]).slice().reverse()
-    .map(l=>`<div class="k-${l.kind}">[${String(l.t).padStart(4,'0')}] ${l.text}</div>`).join('');
-}
-function renderClaims(){
-  const rows=Object.entries(S.claims||{});
-  document.getElementById('claims').innerHTML = rows.length
-    ? rows.map(([r,who])=>`<tr><td>${r}</td><td style="color:var(--claim)">${who}</td><td>live</td></tr>`).join('')
-    : '<tr><td colspan="3" style="color:var(--dim)">none</td></tr>';
-  document.getElementById('s-claims').textContent = rows.length;
-}
-
-
-// A silently dead socket looks exactly like an idle fleet. Show it, and reconnect.
-let ws, wsRetry = 0;
-function showConn(msg){
-  const el = document.getElementById('conn');
-  if(!el) return;
-  if(msg){ el.textContent = msg; el.style.display = 'block'; }
-  else el.style.display = 'none';
-}
-function connect(){
-  ws = new WebSocket((location.protocol==='https:'?'wss://':'ws://')+location.host+'/ws');
-  ws.onopen = () => { wsRetry = 0; showConn(null); };
-  ws.onmessage = e => { showConn(null); onState(JSON.parse(e.data)); };
-  ws.onclose = () => {
-    wsRetry++;
-    showConn(`disconnected from server — reconnecting (attempt ${wsRetry})…`);
-    setTimeout(connect, Math.min(1000 * wsRetry, 6000));
-  };
-  ws.onerror = () => ws.close();
-}
-function fmtTTL(iso){
-  if(!iso) return '';
-  const s = Math.round((new Date(iso) - Date.now())/1000);
-  return s > 0 ? `${s}s` : 'expired';
-}
-
-function onState(d){ S = d;
-  document.getElementById('t-tick').textContent = S.tick;
-  draw(); renderLog(); renderClaims(); }
-connect();
-addEventListener('keydown', e => {
-  if(e.target.tagName === 'INPUT') return;
-  if(e.key === 'r' || e.key === 'R') race();
-  if(e.key === 'x' || e.key === 'X') reset();
+UI.connect(s=>{
+  S=s;
+  document.getElementById('tick').textContent='tick '+s.tick;
+  draw(); UI.renderAnnunciator(s); UI.renderFeed(s);
 });
-
-const J = b => ({method:'POST', headers:{'content-type':'application/json'},
-                 body: JSON.stringify(b)});
-async function race(){
-  const r = await call('/api/race', J({resource:'dock-3',robots:['R1','R2']}), 'Race');
-  if(r){ const w=(r.results||[]).find(x=>x.granted), l=(r.results||[]).find(x=>!x.granted);
-         toast(`${w?w.robot:'?'} won dock-3 · ${l?l.robot:'?'} denied (23505) and re-routed`, true); }
-}
-async function task(id){
-  const r = await call('/api/task', J({robot_id:id, task:'deliver pallet'}), `Task ${id}`);
-  if(r) toast(`${id} -> ${r.granted || 'blocked (all candidates held)'}`, true);
-}
-async function reset(){ if(await call('/api/reset', {method:'POST'}, 'Reset'))
-                          toast('all claims released', true); }
-
-async function recall(){
-  const q=document.getElementById('q').value;
-  const r=await call('/api/recall?q='+encodeURIComponent(q), undefined, 'Recall');
-  if(!r) return;
-  document.getElementById('hits').innerHTML = r.hits.length ? r.hits.map(h=>
-    `<div class="hit"><div class="d">distance ${h.distance}  ·  ${h.robot_id}</div>
-     <div>${h.lesson}</div><div class="m">${h.location||'—'} · ${h.provider}</div></div>`).join('')
-    : '<div class="empty">No lessons stored yet. The fleet\'s memory may have been reset.' +
-      '<br><button onclick="reseed()">Restore baseline lessons</button></div>';
-}
-async function reseed(){
-  const r = await call('/api/reseed', {method:'POST'}, 'Reseed');
-  if(r){ toast(`fleet memory restored — ${r.lessons} lessons`, true); recall(); }
-}
-async function teach(){
-  const lesson = prompt('What should the fleet remember?');
-  if(!lesson) return;
-  await fetch('/api/remember',{method:'POST',headers:{'content-type':'application/json'},
-    body:JSON.stringify({robot_id:'R1',lesson,location:null})});
-  recall();
-}
-async function boot(){
-  const h = await (await fetch('/healthz')).json();
-  document.getElementById('t-db').textContent  = h.config?.target ?? '?';
-  document.getElementById('t-emb').textContent = h.embeddings_provider ?? '?';
-  document.getElementById('t-llm').textContent = h.reasoning_provider ?? '?';
-  const ev = await (await fetch('/api/events?limit=200')).json();
-  document.getElementById('s-dec').textContent =
-      ev.events.filter(e=>e.kind==='decision').length;
-  const rc = await (await fetch('/api/recall?q=warehouse&limit=50')).json();
-  document.getElementById('s-mem').textContent = rc.hits.length;
-  recall();
-}
-boot();
+resize();
+UI.renderLamps(); setInterval(UI.renderLamps,15000);
+UI.recall();
 </script>
 </body>
 </html>
